@@ -46,6 +46,31 @@
         border: 1px solid var(--border);
         padding: 12px;
       }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .tab-button {
+        flex: 1;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        background: #fff;
+        color: var(--fg);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .tab-button.active {
+        background: #f0f2f4;
+        border-color: #c7cbd1;
+        font-weight: 600;
+      }
+      .tab-panel {
+        display: none;
+      }
+      .tab-panel.active {
+        display: block;
+      }
       label {
         display: block;
         font-size: 12px;
@@ -101,35 +126,119 @@
     </header>
     <main>
       <section class="panel">
-        <label for="exampleSelect">Example scene</label>
-        <select id="exampleSelect">
-          <option value="assets/triangle.gltf">Triangle</option>
-          <option value="assets/cube.gltf">Cube</option>
-          <option value="assets/Duck.gltf">Duck</option>
-        </select>
-        <button id="loadExample">Load example</button>
+        <div class="tabs" role="tablist">
+          <button class="tab-button active" data-tab-button="tracing" type="button">Tracing</button>
+          <button class="tab-button" data-tab-button="material" type="button">Material</button>
+          <button class="tab-button" data-tab-button="lights" type="button">Light Sources</button>
+        </div>
 
-        <div style="height: 12px"></div>
-        <label for="fileInput">Load glTF file (embedded buffers only)</label>
-        <input id="fileInput" type="file" accept=".gltf" />
-        <button id="loadFile">Load file</button>
+        <div class="tab-panel active" data-tab-panel="tracing">
+          <label for="exampleSelect">Example scene</label>
+          <select id="exampleSelect">
+            <option value="assets/triangle.gltf">Triangle</option>
+            <option value="assets/cube.gltf">Cube</option>
+            <option value="assets/overlap_boxes.gltf">Overlap Boxes</option>
+            <option value="assets/Duck.gltf">Duck</option>
+          </select>
+          <button id="loadExample">Load example</button>
 
-        <div style="height: 12px"></div>
-        <label>Render</label>
-        <label for="scaleSelect">Render scale</label>
-        <select id="scaleSelect">
-          <option value="1">1.0x</option>
-          <option value="0.75" selected>0.75x</option>
-          <option value="0.5">0.5x</option>
-          <option value="0.25">0.25x</option>
-        </select>
-        <label for="bruteforceToggle">Traversal mode</label>
-        <select id="bruteforceToggle">
-          <option value="bvh" selected>BVH</option>
-          <option value="bruteforce">Brute force</option>
-        </select>
-        <button id="renderBtn">Render</button>
-        <div class="status" id="status"></div>
+          <div style="height: 12px"></div>
+          <label for="envSelect">Environment</label>
+          <select id="envSelect">
+            <option value="">None</option>
+            <option value="assets/env/studio_small_01_1k.hdr" selected>Studio Small 01 (Poly Haven)</option>
+            <option value="assets/env/kloofendal_overcast_1k.hdr">Kloofendal Overcast (Poly Haven)</option>
+          </select>
+          <label for="envIntensity">Environment intensity</label>
+          <input id="envIntensity" type="range" min="0" max="5" step="0.05" value="1" />
+
+          <div style="height: 12px"></div>
+          <label for="fileInput">Load glTF file (embedded buffers only)</label>
+          <input id="fileInput" type="file" accept=".gltf" />
+          <button id="loadFile">Load file</button>
+
+          <div style="height: 12px"></div>
+          <label>Render</label>
+          <label for="scaleSelect">Render scale</label>
+          <select id="scaleSelect">
+            <option value="1">1.0x</option>
+            <option value="0.75" selected>0.75x</option>
+            <option value="0.5">0.5x</option>
+            <option value="0.25">0.25x</option>
+          </select>
+          <label for="bruteforceToggle">Traversal mode</label>
+          <select id="bruteforceToggle">
+            <option value="bvh" selected>BVH</option>
+            <option value="bruteforce">Brute force</option>
+          </select>
+          <label for="maxBounces">Max bounces</label>
+          <input id="maxBounces" type="range" min="0" max="6" step="1" value="2" />
+          <label for="exposure">Exposure</label>
+          <input id="exposure" type="range" min="0" max="5" step="0.05" value="1" />
+          <label for="rayBias">Ray bias (units)</label>
+          <input id="rayBias" type="number" min="0" step="0.000001" value="0.00001" />
+          <label for="tMin">tMin (units)</label>
+          <input id="tMin" type="number" min="0" step="0.000001" value="0.00001" />
+          <label for="samplesPerBounce">Samples per pixel</label>
+          <input id="samplesPerBounce" type="range" min="1" max="8" step="1" value="2" />
+          <button id="renderBtn">Render</button>
+          <div class="status" id="status"></div>
+        </div>
+
+        <div class="tab-panel" data-tab-panel="material">
+          <label for="useGltfColor">Material</label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="useGltfColor" type="checkbox" checked />
+            Use glTF base colors
+          </label>
+          <label for="baseColor">Base color</label>
+          <input id="baseColor" type="color" value="#cccccc" />
+          <label for="metallic">Metallic</label>
+          <input id="metallic" type="range" min="0" max="1" step="0.01" value="0" />
+          <label for="roughness">Roughness</label>
+          <input id="roughness" type="range" min="0.04" max="1" step="0.01" value="0.4" />
+        </div>
+
+        <div class="tab-panel" data-tab-panel="lights">
+          <label for="ambientIntensity">Ambient intensity</label>
+          <input id="ambientIntensity" type="range" min="0" max="2" step="0.05" value="0" />
+          <label for="ambientColor">Ambient color</label>
+          <input id="ambientColor" type="color" value="#ffffff" />
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="shadowToggle" type="checkbox" checked />
+            Cast shadows
+          </label>
+
+          <div style="height: 12px"></div>
+          <label>Directional light 1</label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="light1Enable" type="checkbox" checked />
+            Enabled
+          </label>
+          <label for="light1Azimuth">Azimuth</label>
+          <input id="light1Azimuth" type="range" min="-180" max="180" step="1" value="45" />
+          <label for="light1Elevation">Elevation</label>
+          <input id="light1Elevation" type="range" min="-85" max="85" step="1" value="35" />
+          <label for="light1Intensity">Intensity</label>
+          <input id="light1Intensity" type="range" min="0" max="5" step="0.05" value="1.5" />
+          <label for="light1Color">Color</label>
+          <input id="light1Color" type="color" value="#ffffff" />
+
+          <div style="height: 12px"></div>
+          <label>Directional light 2</label>
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input id="light2Enable" type="checkbox" />
+            Enabled
+          </label>
+          <label for="light2Azimuth">Azimuth</label>
+          <input id="light2Azimuth" type="range" min="-180" max="180" step="1" value="-35" />
+          <label for="light2Elevation">Elevation</label>
+          <input id="light2Elevation" type="range" min="-85" max="85" step="1" value="15" />
+          <label for="light2Intensity">Intensity</label>
+          <input id="light2Intensity" type="range" min="0" max="5" step="0.05" value="0.6" />
+          <label for="light2Color">Color</label>
+          <input id="light2Color" type="color" value="#ffffff" />
+        </div>
       </section>
       <section class="panel">
         <canvas id="view"></canvas>

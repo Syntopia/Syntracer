@@ -1,13 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { packBvhNodes, packTriangles, packTriIndices, computeLayoutForTests } from "../src/packing.js";
+import {
+  packBvhNodes,
+  packTriangles,
+  packTriColors,
+  packTriIndices,
+  computeLayoutForTests
+} from "../src/packing.js";
 
 const simpleNodes = [
   {
     bounds: { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 },
     leftFirst: 0,
     primCount: 1,
-    rightChild: 0
+    rightChild: 0,
+    triIndices: [0]
   }
 ];
 
@@ -43,4 +50,15 @@ test("packTriIndices packs indices into texels", () => {
   assert.equal(packed.data[0], 2);
   assert.equal(packed.data[4], 5);
   assert.equal(packed.data[8], 7);
+});
+
+test("packTriColors packs per-triangle colors", () => {
+  const colors = new Float32Array([1, 0.5, 0.25, 0.1, 0.2, 0.3]);
+  const packed = packTriColors(colors, 64);
+  assert.ok(Math.abs(packed.data[0] - 1) < 1e-6);
+  assert.ok(Math.abs(packed.data[1] - 0.5) < 1e-6);
+  assert.ok(Math.abs(packed.data[2] - 0.25) < 1e-6);
+  assert.ok(Math.abs(packed.data[4] - 0.1) < 1e-6);
+  assert.ok(Math.abs(packed.data[5] - 0.2) < 1e-6);
+  assert.ok(Math.abs(packed.data[6] - 0.3) < 1e-6);
 });

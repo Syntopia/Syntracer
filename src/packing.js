@@ -86,6 +86,54 @@ export function packTriangles(tris, positions, maxTextureSize) {
   };
 }
 
+export function packTriNormals(tris, normals, maxTextureSize) {
+  const texelsPerTri = 3;
+  const triCount = tris.length;
+  const texelCount = triCount * texelsPerTri;
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+
+  for (let i = 0; i < triCount; i += 1) {
+    const tri = tris[i];
+    const i0 = tri[0] * 3;
+    const i1 = tri[1] * 3;
+    const i2 = tri[2] * 3;
+
+    const n0 = [normals[i0], normals[i0 + 1], normals[i0 + 2], 0];
+    const n1 = [normals[i1], normals[i1 + 1], normals[i1 + 2], 0];
+    const n2 = [normals[i2], normals[i2 + 1], normals[i2 + 2], 0];
+
+    const base = i * texelsPerTri;
+    writeTexel(data, base + 0, n0);
+    writeTexel(data, base + 1, n1);
+    writeTexel(data, base + 2, n2);
+  }
+
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    texelsPerTri
+  };
+}
+
+export function packTriColors(triColors, maxTextureSize) {
+  const triCount = triColors.length / 3;
+  const texelCount = triCount;
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+  for (let i = 0; i < triCount; i += 1) {
+    const base = i * 3;
+    writeTexel(data, i, [triColors[base], triColors[base + 1], triColors[base + 2], 1]);
+  }
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    texelsPerTri: 1
+  };
+}
+
 export function packTriIndices(triIndexBuffer, maxTextureSize) {
   const texelCount = triIndexBuffer.length;
   const layout = computeTextureLayout(texelCount, maxTextureSize);
@@ -98,20 +146,6 @@ export function packTriIndices(triIndexBuffer, maxTextureSize) {
     width: layout.width,
     height: layout.height,
     texelsPerIndex: 1
-  };
-}
-
-export function packMaterials(maxTextureSize) {
-  const data = new Float32Array(4);
-  data[0] = 0.7;
-  data[1] = 0.8;
-  data[2] = 0.9;
-  data[3] = 0;
-  return {
-    data,
-    width: 1,
-    height: 1,
-    texelsPerMaterial: 1
   };
 }
 

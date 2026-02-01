@@ -52,6 +52,36 @@ def _write_gltf(name, positions, indices, index_component_type):
 def main():
     from array import array
 
+    def add_cube(positions, indices, center, scale, index_offset):
+        cx, cy, cz = center
+        s = scale
+        verts = [
+            -1.0, -1.0, -1.0,
+            1.0, -1.0, -1.0,
+            1.0, 1.0, -1.0,
+            -1.0, 1.0, -1.0,
+            -1.0, -1.0, 1.0,
+            1.0, -1.0, 1.0,
+            1.0, 1.0, 1.0,
+            -1.0, 1.0, 1.0,
+        ]
+        for i in range(0, len(verts), 3):
+            positions.extend([
+                cx + verts[i] * s,
+                cy + verts[i + 1] * s,
+                cz + verts[i + 2] * s,
+            ])
+        base = [
+            0, 1, 2, 0, 2, 3,
+            4, 6, 5, 4, 7, 6,
+            0, 4, 5, 0, 5, 1,
+            1, 5, 6, 1, 6, 2,
+            2, 6, 7, 2, 7, 3,
+            3, 7, 4, 3, 4, 0,
+        ]
+        for idx in base:
+            indices.append(index_offset + idx)
+
     tri_positions = array("f", [
         0.0, 0.0, 0.0,
         1.0, 0.0, 0.0,
@@ -79,6 +109,13 @@ def main():
         3, 7, 4, 3, 4, 0,
     ])
     _write_gltf("cube", cube_positions, cube_indices, 5123)
+
+    boxes_positions = array("f")
+    boxes_indices = array("H")
+    add_cube(boxes_positions, boxes_indices, center=(0.0, 0.0, 0.0), scale=0.9, index_offset=0)
+    add_cube(boxes_positions, boxes_indices, center=(0.6, 0.3, 0.0), scale=0.75, index_offset=8)
+    add_cube(boxes_positions, boxes_indices, center=(-0.5, 0.2, 0.4), scale=0.7, index_offset=16)
+    _write_gltf("overlap_boxes", boxes_positions, boxes_indices, 5123)
 
 
 if __name__ == "__main__":

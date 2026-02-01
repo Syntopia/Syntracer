@@ -1,10 +1,12 @@
 import { createLogger } from "./logger.js";
 import { loadGltfFromText } from "./gltf.js";
 import { buildSAHBVH, flattenBVH } from "./bvh.js";
-import { packBvhNodes, packTriangles, packTriIndices, packMaterials } from "./packing.js";
+import { packBvhNodes, packTriangles, packTriNormals, packTriColors, packTriIndices } from "./packing.js";
+import { loadHDR } from "./hdr.js";
 import {
   initWebGL,
   createDataTexture,
+  createEnvTexture,
   createAccumTargets,
   resizeAccumTargets,
   createTextureUnit,
@@ -20,11 +22,38 @@ const logger = createLogger(statusEl);
 
 const exampleSelect = document.getElementById("exampleSelect");
 const loadExampleBtn = document.getElementById("loadExample");
+const envSelect = document.getElementById("envSelect");
+const envIntensityInput = document.getElementById("envIntensity");
 const fileInput = document.getElementById("fileInput");
 const loadFileBtn = document.getElementById("loadFile");
 const renderBtn = document.getElementById("renderBtn");
 const scaleSelect = document.getElementById("scaleSelect");
 const bruteforceToggle = document.getElementById("bruteforceToggle");
+const useGltfColorToggle = document.getElementById("useGltfColor");
+const baseColorInput = document.getElementById("baseColor");
+const metallicInput = document.getElementById("metallic");
+const roughnessInput = document.getElementById("roughness");
+const maxBouncesInput = document.getElementById("maxBounces");
+const exposureInput = document.getElementById("exposure");
+const ambientIntensityInput = document.getElementById("ambientIntensity");
+const ambientColorInput = document.getElementById("ambientColor");
+const rayBiasInput = document.getElementById("rayBias");
+const tMinInput = document.getElementById("tMin");
+const samplesPerBounceInput = document.getElementById("samplesPerBounce");
+const shadowToggle = document.getElementById("shadowToggle");
+const light1Enable = document.getElementById("light1Enable");
+const light1Azimuth = document.getElementById("light1Azimuth");
+const light1Elevation = document.getElementById("light1Elevation");
+const light1Intensity = document.getElementById("light1Intensity");
+const light1Color = document.getElementById("light1Color");
+const light2Enable = document.getElementById("light2Enable");
+const light2Azimuth = document.getElementById("light2Azimuth");
+const light2Elevation = document.getElementById("light2Elevation");
+const light2Intensity = document.getElementById("light2Intensity");
+const light2Color = document.getElementById("light2Color");
+
+const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
+const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
 
 let sceneData = null;
 let glState = null;
@@ -47,8 +76,29 @@ const renderState = {
   scale: 0.75,
   frameIndex: 0,
   cameraDirty: true,
-  useBvh: true
+  useBvh: true,
+  useGltfColor: true,
+  baseColor: [0.8, 0.8, 0.8],
+  metallic: 0.0,
+  roughness: 0.4,
+  maxBounces: 2,
+  exposure: 1.0,
+  ambientIntensity: 0.0,
+  ambientColor: [1.0, 1.0, 1.0],
+  envUrl: null,
+  envIntensity: 1.0,
+  envData: null,
+  rayBias: 1e-5,
+  tMin: 1e-5,
+  samplesPerBounce: 2,
+  castShadows: true,
+  lights: [
+    { enabled: true, azimuth: 45, elevation: 35, intensity: 1.5, color: [1.0, 1.0, 1.0] },
+    { enabled: false, azimuth: -35, elevation: 15, intensity: 0.6, color: [1.0, 1.0, 1.0] }
+  ]
 };
+
+const envCache = new Map();
 
 const inputState = {
   dragging: false,
@@ -67,7 +117,7 @@ async function fetchText(url) {
 
 async function loadGltfText(text, baseUrl = null) {
   logger.info("Parsing glTF");
-  const { positions, indices } = await loadGltfFromText(text, baseUrl, fetch);
+  const { positions, indices, normals, triColors } = await loadGltfFromText(text, baseUrl, fetch);
   logger.info(`Loaded ${positions.length / 3} vertices, ${indices.length / 3} triangles`);
   if (positions.length === 0 || indices.length === 0) {
     throw new Error(
@@ -84,11 +134,14 @@ async function loadGltfText(text, baseUrl = null) {
   sceneData = {
     positions,
     indices,
+    normals,
+    triColors,
     nodes: bvh.nodes,
     tris: bvh.tris,
     triIndexBuffer: flat.triIndexBuffer,
     triCount: bvh.tris.length,
-    triIndexCount: flat.triIndexBuffer.length
+    triIndexCount: flat.triIndexBuffer.length,
+    sceneScale: 1.0
   };
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
@@ -98,12 +151,147 @@ async function loadGltfText(text, baseUrl = null) {
     logger.info(
       `Bounds min (${bounds.minX.toFixed(2)}, ${bounds.minY.toFixed(2)}, ${bounds.minZ.toFixed(2)}) max (${bounds.maxX.toFixed(2)}, ${bounds.maxY.toFixed(2)}, ${bounds.maxZ.toFixed(2)})`
     );
+    const dx = bounds.maxX - bounds.minX;
+    const dy = bounds.maxY - bounds.minY;
+    const dz = bounds.maxZ - bounds.minZ;
+    sceneData.sceneScale = Math.max(1e-3, Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5);
+    const suggestedBias = Math.max(1e-5, sceneData.sceneScale * 1e-5);
+    rayBiasInput.value = suggestedBias.toFixed(6);
+    tMinInput.value = suggestedBias.toFixed(6);
+    renderState.rayBias = suggestedBias;
+    renderState.tMin = suggestedBias;
     applyCameraToBounds(bounds);
   }
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function hexToRgb(hex) {
+  const value = hex.startsWith("#") ? hex.slice(1) : hex;
+  if (value.length !== 6) return [1, 1, 1];
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  return [r / 255, g / 255, b / 255];
+}
+
+function lightDirFromAngles(azimuthDeg, elevationDeg) {
+  const az = (azimuthDeg * Math.PI) / 180;
+  const el = (elevationDeg * Math.PI) / 180;
+  const x = Math.cos(el) * Math.sin(az);
+  const y = Math.sin(el);
+  const z = Math.cos(el) * Math.cos(az);
+  return [x, y, z];
+}
+
+function resetAccumulation(reason) {
+  renderState.frameIndex = 0;
+  renderState.cameraDirty = true;
+  loggedFirstFrame = false;
+  if (reason) {
+    logger.info(reason);
+  }
+}
+
+function setActiveTab(name) {
+  tabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.tabButton === name);
+  });
+  tabPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.tabPanel === name);
+  });
+}
+
+function updateMaterialState() {
+  renderState.useGltfColor = useGltfColorToggle.checked;
+  renderState.baseColor = hexToRgb(baseColorInput.value);
+  renderState.metallic = clamp(Number(metallicInput.value), 0, 1);
+  renderState.roughness = clamp(Number(roughnessInput.value), 0.02, 1);
+  renderState.maxBounces = clamp(Number(maxBouncesInput.value), 0, 6);
+  renderState.exposure = clamp(Number(exposureInput.value), 0, 5);
+  renderState.ambientIntensity = clamp(Number(ambientIntensityInput.value), 0, 2);
+  renderState.ambientColor = hexToRgb(ambientColorInput.value);
+  renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 5);
+  renderState.rayBias = clamp(Number(rayBiasInput.value), 0, 1);
+  renderState.tMin = clamp(Number(tMinInput.value), 0, 1);
+  renderState.samplesPerBounce = clamp(Number(samplesPerBounceInput.value), 1, 8);
+  renderState.castShadows = shadowToggle.checked;
+  resetAccumulation("Material settings updated.");
+}
+
+async function loadEnvironment(url) {
+  if (!url) {
+    renderState.envUrl = null;
+    renderState.envData = null;
+    if (glState) {
+      if (glState.envTex && glState.envTex !== glState.blackEnvTex) {
+        glState.gl.deleteTexture(glState.envTex);
+      }
+      glState.envTex = glState.blackEnvTex;
+      glState.envSize = [1, 1];
+      glState.envUrl = null;
+    }
+    return;
+  }
+
+  if (envCache.has(url)) {
+    renderState.envData = envCache.get(url);
+  } else {
+    logger.info(`Loading environment: ${url}`);
+    const env = await loadHDR(url, logger);
+    envCache.set(url, env);
+    renderState.envData = env;
+  }
+  renderState.envUrl = url;
+
+  if (glState && renderState.envData) {
+    if (glState.envTex && glState.envTex !== glState.blackEnvTex) {
+      glState.gl.deleteTexture(glState.envTex);
+    }
+    glState.envTex = createEnvTexture(
+      glState.gl,
+      renderState.envData.width,
+      renderState.envData.height,
+      renderState.envData.data
+    );
+    glState.envSize = [renderState.envData.width, renderState.envData.height];
+    glState.envUrl = url;
+  }
+}
+
+async function updateEnvironmentState() {
+  renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 5);
+  const url = envSelect.value || null;
+  if (url !== renderState.envUrl) {
+    try {
+      await loadEnvironment(url);
+      resetAccumulation("Environment updated.");
+    } catch (err) {
+      logger.error(err.message || String(err));
+    }
+  } else {
+    resetAccumulation("Environment intensity updated.");
+  }
+}
+
+function updateLightState() {
+  renderState.lights[0] = {
+    enabled: light1Enable.checked,
+    azimuth: Number(light1Azimuth.value),
+    elevation: Number(light1Elevation.value),
+    intensity: clamp(Number(light1Intensity.value), 0, 10),
+    color: hexToRgb(light1Color.value)
+  };
+  renderState.lights[1] = {
+    enabled: light2Enable.checked,
+    azimuth: Number(light2Azimuth.value),
+    elevation: Number(light2Elevation.value),
+    intensity: clamp(Number(light2Intensity.value), 0, 10),
+    color: hexToRgb(light2Color.value)
+  };
+  resetAccumulation("Lighting updated.");
 }
 
 function computeBounds(positions) {
@@ -250,6 +438,7 @@ function ensureWebGL() {
     }
     try {
       const { gl, traceProgram, displayProgram, vao } = initWebGL(canvas, logger);
+      const blackEnvTex = createEnvTexture(gl, 1, 1, new Float32Array([0, 0, 0, 1]));
       glState = {
         gl,
         traceProgram,
@@ -257,7 +446,11 @@ function ensureWebGL() {
         vao,
         textures: null,
         accum: null,
-        frameParity: 0
+        frameParity: 0,
+        envTex: blackEnvTex,
+        blackEnvTex,
+        envSize: [1, 1],
+        envUrl: null
       };
     } catch (err) {
       glInitFailed = true;
@@ -270,23 +463,27 @@ function ensureWebGL() {
 function uploadSceneTextures(gl, maxTextureSize) {
   const bvh = packBvhNodes(sceneData.nodes, maxTextureSize);
   const tris = packTriangles(sceneData.tris, sceneData.positions, maxTextureSize);
+  const triNormals = packTriNormals(sceneData.tris, sceneData.normals, maxTextureSize);
+  const triColors = packTriColors(sceneData.triColors, maxTextureSize);
   const triIndices = packTriIndices(sceneData.triIndexBuffer, maxTextureSize);
-  const materials = packMaterials(maxTextureSize);
 
   const bvhTex = createDataTexture(gl, bvh.width, bvh.height, bvh.data);
   const triTex = createDataTexture(gl, tris.width, tris.height, tris.data);
+  const triNormalTex = createDataTexture(gl, triNormals.width, triNormals.height, triNormals.data);
+  const triColorTex = createDataTexture(gl, triColors.width, triColors.height, triColors.data);
   const triIndexTex = createDataTexture(gl, triIndices.width, triIndices.height, triIndices.data);
-  const matTex = createDataTexture(gl, materials.width, materials.height, materials.data);
 
   return {
     bvh,
     tris,
+    triNormals,
+    triColors,
     triIndices,
-    materials,
     bvhTex,
     triTex,
+    triNormalTex,
+    triColorTex,
     triIndexTex,
-    matTex
   };
 }
 
@@ -324,6 +521,20 @@ function renderFrame() {
     glState.textures = uploadSceneTextures(gl, maxTextureSize);
   }
 
+  if (renderState.envData && glState.envUrl !== renderState.envUrl) {
+    if (glState.envTex && glState.envTex !== glState.blackEnvTex) {
+      gl.deleteTexture(glState.envTex);
+    }
+    glState.envTex = createEnvTexture(
+      gl,
+      renderState.envData.width,
+      renderState.envData.height,
+      renderState.envData.data
+    );
+    glState.envSize = [renderState.envData.width, renderState.envData.height];
+    glState.envUrl = renderState.envUrl;
+  }
+
   if (!renderState.useBvh && sceneData.triCount > MAX_BRUTE_FORCE_TRIS) {
     throw new Error(
       `Brute force mode supports up to ${MAX_BRUTE_FORCE_TRIS} triangles; scene has ${sceneData.triCount}.`
@@ -339,6 +550,9 @@ function renderFrame() {
   }
 
   const camera = computeCameraVectors();
+  const lightDirs = renderState.lights.map((light) =>
+    lightDirFromAngles(light.azimuth, light.elevation)
+  );
 
   gl.disable(gl.DEPTH_TEST);
   gl.bindVertexArray(vao);
@@ -355,14 +569,20 @@ function renderFrame() {
 
   createTextureUnit(gl, glState.textures.bvhTex, 0);
   createTextureUnit(gl, glState.textures.triTex, 1);
-  createTextureUnit(gl, glState.textures.triIndexTex, 2);
-  createTextureUnit(gl, glState.accum.textures[prevIndex], 3);
+  createTextureUnit(gl, glState.textures.triNormalTex, 2);
+  createTextureUnit(gl, glState.textures.triColorTex, 3);
+  createTextureUnit(gl, glState.textures.triIndexTex, 4);
+  createTextureUnit(gl, glState.accum.textures[prevIndex], 5);
+  createTextureUnit(gl, glState.envTex || glState.blackEnvTex, 6);
 
   setTraceUniforms(gl, traceProgram, {
     bvhUnit: 0,
     triUnit: 1,
-    triIndexUnit: 2,
-    accumUnit: 3,
+    triNormalUnit: 2,
+    triColorUnit: 3,
+    triIndexUnit: 4,
+    accumUnit: 5,
+    envUnit: 6,
     camOrigin: camera.origin,
     camRight: camera.right,
     camUp: camera.up,
@@ -370,10 +590,29 @@ function renderFrame() {
     resolution: [renderWidth, renderHeight],
     bvhTexSize: [glState.textures.bvh.width, glState.textures.bvh.height],
     triTexSize: [glState.textures.tris.width, glState.textures.tris.height],
+    triNormalTexSize: [glState.textures.triNormals.width, glState.textures.triNormals.height],
+    triColorTexSize: [glState.textures.triColors.width, glState.textures.triColors.height],
     triIndexTexSize: [glState.textures.triIndices.width, glState.textures.triIndices.height],
+    envTexSize: glState.envSize || [1, 1],
     frameIndex: renderState.frameIndex,
     triCount: sceneData.triCount,
-    useBvh: renderState.useBvh ? 1 : 0
+    useBvh: renderState.useBvh ? 1 : 0,
+    useGltfColor: renderState.useGltfColor ? 1 : 0,
+    baseColor: renderState.baseColor,
+    metallic: renderState.metallic,
+    roughness: renderState.roughness,
+    maxBounces: renderState.maxBounces,
+    exposure: renderState.exposure,
+    ambientIntensity: renderState.ambientIntensity,
+    ambientColor: renderState.ambientColor,
+    envIntensity: renderState.envIntensity,
+    useEnv: renderState.envUrl ? 1 : 0,
+    samplesPerBounce: renderState.samplesPerBounce,
+    castShadows: renderState.castShadows ? 1 : 0,
+    rayBias: renderState.rayBias,
+    tMin: renderState.tMin,
+    lights: renderState.lights,
+    lightDirs
   });
 
   gl.useProgram(traceProgram);
@@ -541,21 +780,52 @@ scaleSelect.addEventListener("change", () => {
     return;
   }
   renderState.scale = value;
-  renderState.frameIndex = 0;
-  renderState.cameraDirty = true;
-  loggedFirstFrame = false;
+  resetAccumulation(`Render scale set to ${value.toFixed(2)}x`);
   glState = null;
-  logger.info(`Render scale set to ${value.toFixed(2)}x`);
+});
+
+envSelect.addEventListener("change", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+envIntensityInput.addEventListener("input", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+
+tabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveTab(button.dataset.tabButton);
+  });
 });
 
 bruteforceToggle.addEventListener("change", () => {
   const mode = bruteforceToggle.value;
   renderState.useBvh = mode !== "bruteforce";
-  renderState.frameIndex = 0;
-  renderState.cameraDirty = true;
-  loggedFirstFrame = false;
-  logger.info(`Traversal mode: ${renderState.useBvh ? "BVH" : "Brute force"}`);
+  resetAccumulation(`Traversal mode: ${renderState.useBvh ? "BVH" : "Brute force"}`);
 });
+
+useGltfColorToggle.addEventListener("change", updateMaterialState);
+baseColorInput.addEventListener("input", updateMaterialState);
+metallicInput.addEventListener("input", updateMaterialState);
+roughnessInput.addEventListener("input", updateMaterialState);
+maxBouncesInput.addEventListener("input", updateMaterialState);
+exposureInput.addEventListener("input", updateMaterialState);
+ambientIntensityInput.addEventListener("input", updateMaterialState);
+ambientColorInput.addEventListener("input", updateMaterialState);
+rayBiasInput.addEventListener("input", updateMaterialState);
+tMinInput.addEventListener("input", updateMaterialState);
+samplesPerBounceInput.addEventListener("input", updateMaterialState);
+shadowToggle.addEventListener("change", updateMaterialState);
+
+light1Enable.addEventListener("change", updateLightState);
+light1Azimuth.addEventListener("input", updateLightState);
+light1Elevation.addEventListener("input", updateLightState);
+light1Intensity.addEventListener("input", updateLightState);
+light1Color.addEventListener("input", updateLightState);
+light2Enable.addEventListener("change", updateLightState);
+light2Azimuth.addEventListener("input", updateLightState);
+light2Elevation.addEventListener("input", updateLightState);
+light2Intensity.addEventListener("input", updateLightState);
+light2Color.addEventListener("input", updateLightState);
 
 const params = new URLSearchParams(window.location.search);
 const autorun = params.get("autorun");
@@ -575,3 +845,8 @@ if (autorun === "1") {
 } else {
   logger.info("Ready. Load an example or choose a .gltf file.");
 }
+
+updateMaterialState();
+updateLightState();
+updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+setActiveTab("tracing");
