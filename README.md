@@ -21,6 +21,15 @@ Requires `uvicorn` installed in the `wave` environment.
 
 Then open `http://localhost:8000`.
 
+## Optional: WebAssembly SES surface
+To enable the WebAssembly SES backend, build the WASM module:
+
+```
+npm run build:wasm
+```
+
+This uses `wasm-pack` from the `wave` environment and outputs to `src/wasm/ses`.
+
 ## Example assets
 Generate the embedded-buffer `.gltf` examples:
 

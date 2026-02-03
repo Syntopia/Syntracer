@@ -17,6 +17,7 @@ import {
   BUILTIN_MOLECULES
 } from "./molecular.js";
 import { computeSES, sesToTriangles } from "./surface.js";
+import { computeSESWasm, initSurfaceWasm, surfaceWasmReady } from "./surface_wasm.js";
 import {
   initWebGL,
   createDataTexture,
@@ -50,6 +51,7 @@ const pdbDisplayStyle = document.getElementById("pdbDisplayStyle");
 const pdbAtomScale = document.getElementById("pdbAtomScale");
 const pdbBondRadius = document.getElementById("pdbBondRadius");
 const showSurfaceToggle = document.getElementById("showSurface");
+const useWasmSurfaceToggle = document.getElementById("useWasmSurface");
 const probeRadiusInput = document.getElementById("probeRadius");
 const surfaceResolutionInput = document.getElementById("surfaceResolution");
 const smoothNormalsToggle = document.getElementById("smoothNormals");
@@ -512,7 +514,7 @@ function getMolecularDisplayOptions() {
   }
 }
 
-function loadMolecularFile(text, filename) {
+async function loadMolecularFile(text, filename) {
   logger.info(`Parsing molecular file: ${filename}`);
 
   const molData = parseAutoDetect(text, filename);
@@ -521,13 +523,13 @@ function loadMolecularFile(text, filename) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  loadMolecularGeometry(spheres, cylinders, molData, options);
+  await loadMolecularGeometry(spheres, cylinders, molData, options);
 }
 
 /**
  * Load molecular geometry from spheres and cylinders.
  */
-function loadMolecularGeometry(spheres, cylinders, molData = null, options = null) {
+async function loadMolecularGeometry(spheres, cylinders, molData = null, options = null) {
   const showSurface = showSurfaceToggle?.checked || false;
   const displayOptions = options ?? getMolecularDisplayOptions();
   const split = molData ? splitMolDataByHetatm(molData) : null;
@@ -548,11 +550,13 @@ function loadMolecularGeometry(spheres, cylinders, molData = null, options = nul
       logger.warn("No non-HETATM atoms available for surface; rendering atoms only.");
     } else {
       const probeRadius = parseFloat(probeRadiusInput?.value) || 1.4;
-    const resolution = parseFloat(surfaceResolutionInput?.value) || 0.25;
+      const resolution = parseFloat(surfaceResolutionInput?.value) || 0.25;
       const smoothNormals = smoothNormalsToggle?.checked || false;
 
+      const usingWasm = useWasmSurfaceToggle?.checked || false;
+      const backendLabel = usingWasm ? "WASM" : "JS";
       logger.info(
-        `Computing SES surface (probe=${probeRadius}Å, resolution=${resolution}Å, smoothNormals=${smoothNormals})...`
+        `Computing SES surface (${backendLabel}, probe=${probeRadius}Å, resolution=${resolution}Å, smoothNormals=${smoothNormals})...`
       );
       const surfaceStart = performance.now();
 
@@ -567,11 +571,26 @@ function loadMolecularGeometry(spheres, cylinders, molData = null, options = nul
         radius: ELEMENT_RADII[a.element] || ELEMENT_RADII.DEFAULT
       }));
 
-      const sesMesh = computeSES(atoms, { probeRadius, resolution, smoothNormals });
+      let sesMesh = null;
+      if (usingWasm) {
+        try {
+          if (!surfaceWasmReady()) {
+            logger.info("Initializing SES WASM module...");
+          }
+          sesMesh = await computeSESWasm(atoms, { probeRadius, resolution, smoothNormals });
+        } catch (err) {
+          logger.error(err.message || String(err));
+          throw err;
+        }
+      } else {
+        sesMesh = computeSES(atoms, { probeRadius, resolution, smoothNormals });
+      }
       const surfaceTime = performance.now() - surfaceStart;
+      logger.info(
+        `SES ${backendLabel} completed in ${surfaceTime.toFixed(0)}ms: ${sesMesh.indices.length / 3} triangles`
+      );
 
       if (sesMesh.vertices.length > 0) {
-        logger.info(`SES computed in ${surfaceTime.toFixed(0)}ms: ${sesMesh.indices.length / 3} triangles`);
 
         const surfaceData = sesToTriangles(sesMesh, [0.7, 0.75, 0.9]);
         positions = surfaceData.positions;
@@ -689,13 +708,13 @@ async function loadPDBById(pdbId) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  loadMolecularGeometry(spheres, cylinders, molData, options);
+  await loadMolecularGeometry(spheres, cylinders, molData, options);
 }
 
 /**
  * Load a built-in small molecule by name.
  */
-function loadBuiltinMolecule(name) {
+async function loadBuiltinMolecule(name) {
   logger.info(`Loading built-in molecule: ${name}`);
   const molData = getBuiltinMolecule(name);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
@@ -703,7 +722,7 @@ function loadBuiltinMolecule(name) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  loadMolecularGeometry(spheres, cylinders, molData, options);
+  await loadMolecularGeometry(spheres, cylinders, molData, options);
 }
 
 // Expose for debugging in console
@@ -1455,7 +1474,7 @@ async function loadExampleScene(url) {
     } else if (url.startsWith("__sdf_")) {
       // Built-in SDF molecule
       const molName = url.replace("__sdf_", "").replace("__", "");
-      loadBuiltinMolecule(molName);
+      await loadBuiltinMolecule(molName);
       success = true;
     } else {
       logger.info(`Loading example: ${url}`);
@@ -1485,7 +1504,7 @@ loadExampleBtn.addEventListener("click", async () => {
     if (value.startsWith("mol:")) {
       // Small molecule (SDF)
       const molName = value.slice(4);
-      loadBuiltinMolecule(molName);
+      await loadBuiltinMolecule(molName);
       glState = null;
       loaded = true;
     } else if (value.startsWith("pdb:")) {
@@ -1543,7 +1562,7 @@ molFileInput.addEventListener("change", async () => {
     const file = molFileInput.files?.[0];
     if (!file) return;
     const text = await file.text();
-    loadMolecularFile(text, file.name);
+    await loadMolecularFile(text, file.name);
     glState = null;
     loaded = true;
   } catch (err) {
@@ -1734,6 +1753,18 @@ bruteforceToggle.addEventListener("change", () => {
 });
 
 useGltfColorToggle.addEventListener("change", updateMaterialState);
+useWasmSurfaceToggle?.addEventListener("change", async () => {
+  if (!useWasmSurfaceToggle.checked) {
+    return;
+  }
+  try {
+    logger.info("Loading SES WASM module...");
+    await initSurfaceWasm();
+    logger.info("SES WASM module ready.");
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
 materialSelect?.addEventListener("change", () => {
   updateMaterialVisibility();
   updateMaterialState();

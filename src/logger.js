@@ -1,6 +1,6 @@
 export function createLogger(statusEl) {
   const lines = [];
-  const maxLines = 6;
+  const maxLines = 50;
 
   function push(line) {
     lines.push(line);
@@ -9,6 +9,7 @@ export function createLogger(statusEl) {
     }
     if (statusEl) {
       statusEl.textContent = lines.join("\n");
+      statusEl.scrollTop = statusEl.scrollHeight;
     }
     console.log(line);
   }

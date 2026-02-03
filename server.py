@@ -12,6 +12,7 @@ mimetypes.add_type("model/gltf+json", ".gltf")
 mimetypes.add_type("model/gltf-binary", ".glb")
 mimetypes.add_type("application/octet-stream", ".bin")
 mimetypes.add_type("image/vnd.radiance", ".hdr")
+mimetypes.add_type("application/wasm", ".wasm")
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 

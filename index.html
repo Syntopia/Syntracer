@@ -375,6 +375,8 @@
         color: var(--fg-muted);
         white-space: pre-wrap;
         min-height: 40px;
+        max-height: 140px;
+        overflow-y: auto;
         background: var(--input-bg);
         border-radius: var(--radius-sm);
         padding: 8px 10px;
@@ -581,6 +583,11 @@
               <div class="checkbox-group">
                 <input id="showSurface" type="checkbox" />
                 <label for="showSurface">Show molecular surface (SES)</label>
+              </div>
+
+              <div class="checkbox-group">
+                <input id="useWasmSurface" type="checkbox" />
+                <label for="useWasmSurface">Use WebAssembly for surface (requires build)</label>
               </div>
 
               <label for="probeRadius">Probe radius (Å)</label>

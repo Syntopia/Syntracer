@@ -926,6 +926,10 @@ export function computeSES(atoms, options = {}) {
 
   // Step 5: Filter out extra surface components
   sesMesh = filterSESComponents(sesMesh, atoms, probeRadius, maxAtomRadius);
+  // Flip normals so they point outward from the molecule (SES is inner surface of probe union)
+  for (let i = 0; i < sesMesh.normals.length; i++) {
+    sesMesh.normals[i] = -sesMesh.normals[i];
+  }
 
   return sesMesh;
 }
