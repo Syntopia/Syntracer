@@ -60,6 +60,8 @@ const BOND_COLOR = [0.9, 0.9, 0.9];  // White/light gray
 export function parsePDB(text) {
   const atoms = [];
   const bonds = [];
+  const helices = [];
+  const sheets = [];
   const lines = text.split('\n');
 
   // Map from atom serial number to index
@@ -68,12 +70,63 @@ export function parsePDB(text) {
   for (const line of lines) {
     const recordType = line.substring(0, 6).trim();
 
-    if (recordType === 'ATOM' || recordType === 'HETATM') {
+    if (recordType === 'HELIX') {
+      const chainId = line.substring(19, 20).trim() || " ";
+      const startSeqRaw = line.substring(21, 25).trim();
+      const startSeqValue = startSeqRaw ? parseInt(startSeqRaw, 10) : null;
+      const startSeq = Number.isFinite(startSeqValue) ? startSeqValue : null;
+      const startICode = line.substring(25, 26).trim();
+      const endChainId = line.substring(31, 32).trim() || " ";
+      const endSeqRaw = line.substring(33, 37).trim();
+      const endSeqValue = endSeqRaw ? parseInt(endSeqRaw, 10) : null;
+      const endSeq = Number.isFinite(endSeqValue) ? endSeqValue : null;
+      const endICode = line.substring(37, 38).trim();
+      if (startSeq !== null && endSeq !== null) {
+        helices.push({
+          chainId,
+          startSeq,
+          startICode,
+          endSeq,
+          endICode,
+          endChainId
+        });
+      }
+    } else if (recordType === 'SHEET') {
+      const chainId = line.substring(21, 22).trim() || " ";
+      const startSeqRaw = line.substring(22, 26).trim();
+      const startSeqValue = startSeqRaw ? parseInt(startSeqRaw, 10) : null;
+      const startSeq = Number.isFinite(startSeqValue) ? startSeqValue : null;
+      const startICode = line.substring(26, 27).trim();
+      const endChainId = line.substring(32, 33).trim() || " ";
+      const endSeqRaw = line.substring(33, 37).trim();
+      const endSeqValue = endSeqRaw ? parseInt(endSeqRaw, 10) : null;
+      const endSeq = Number.isFinite(endSeqValue) ? endSeqValue : null;
+      const endICode = line.substring(37, 38).trim();
+      if (startSeq !== null && endSeq !== null) {
+        sheets.push({
+          chainId,
+          startSeq,
+          startICode,
+          endSeq,
+          endICode,
+          endChainId
+        });
+      }
+    } else if (recordType === 'ATOM' || recordType === 'HETATM') {
       const serial = parseInt(line.substring(6, 11).trim(), 10);
       const name = line.substring(12, 16).trim();
+      const altLoc = line.substring(16, 17).trim();
+      const resName = line.substring(17, 20).trim();
+      const chainId = line.substring(21, 22).trim() || " ";
+      const resSeqRaw = line.substring(22, 26).trim();
+      const resSeqValue = resSeqRaw ? parseInt(resSeqRaw, 10) : null;
+      const resSeq = Number.isFinite(resSeqValue) ? resSeqValue : null;
+      const iCode = line.substring(26, 27).trim();
       const x = parseFloat(line.substring(30, 38).trim());
       const y = parseFloat(line.substring(38, 46).trim());
       const z = parseFloat(line.substring(46, 54).trim());
+      const occupancyRaw = line.substring(54, 60).trim();
+      const occupancy = occupancyRaw ? parseFloat(occupancyRaw) : null;
 
       // Element symbol - try column 77-78 first, then extract from atom name
       let element = line.substring(76, 78).trim();
@@ -95,7 +148,13 @@ export function parsePDB(text) {
         name,
         element,
         position: [x, y, z],
-        isHet: recordType === 'HETATM'
+        isHet: recordType === 'HETATM',
+        altLoc,
+        resName,
+        chainId,
+        resSeq,
+        iCode,
+        occupancy
       });
     } else if (recordType === 'CONECT') {
       // Parse connectivity records
@@ -122,7 +181,7 @@ export function parsePDB(text) {
     generateBondsFromDistance(atoms, bonds);
   }
 
-  return { atoms, bonds };
+  return { atoms, bonds, secondary: { helices, sheets } };
 }
 
 /**

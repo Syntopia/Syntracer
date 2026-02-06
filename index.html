@@ -481,7 +481,7 @@
 
         <div class="sidebar-content">
           <div class="tabs" role="tablist">
-            <button class="tab-button active" data-tab-button="scene" type="button">Scene</button>
+            <button class="tab-button active" data-tab-button="scene" type="button">Import</button>
             <button class="tab-button" data-tab-button="render" type="button">Render</button>
             <button class="tab-button" data-tab-button="material" type="button">Material</button>
             <button class="tab-button" data-tab-button="lights" type="button">Lights</button>
@@ -554,6 +554,7 @@
                 <option value="ball-and-stick" selected>Ball and Stick</option>
                 <option value="vdw">Van der Waals (Space-filling)</option>
                 <option value="stick">Stick only</option>
+                <option value="cartoon">Cartoon (Backbone)</option>
               </select>
 
               <div style="height: 12px"></div>
@@ -615,6 +616,44 @@
                 <input id="smoothNormals" type="checkbox" />
                 <label for="smoothNormals">Smooth surface normals</label>
               </div>
+
+              <div style="height: 8px"></div>
+              <div class="checkbox-group">
+                <input id="showSheetHbonds" type="checkbox" />
+                <label for="showSheetHbonds">Debug: show sheet H-bonds</label>
+              </div>
+
+              <div class="divider"></div>
+
+              <div style="font-size: 11px; color: var(--fg-muted); margin-bottom: 8px;">
+                Volume (applied on PDB import)
+              </div>
+              <div class="checkbox-group">
+                <input id="volumeImportToggle" type="checkbox" />
+                <label for="volumeImportToggle">Create nitrogen density volume</label>
+              </div>
+
+              <label for="volumeGridSpacing">Volume grid spacing (Å)</label>
+              <div class="slider-input">
+                <input id="volumeGridSpacing" type="range" min="0.2" max="1.5" step="0.05" value="0.5" />
+                <input type="text" class="value-input" data-for="volumeGridSpacing" value="0.50" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeGridSpacing">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeGridSpacing">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <label for="volumeGaussianScale">Gaussian radius scale (x VdW)</label>
+              <div class="slider-input">
+                <input id="volumeGaussianScale" type="range" min="1" max="6" step="0.1" value="3.0" />
+                <input type="text" class="value-input" data-for="volumeGaussianScale" value="3.0" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeGaussianScale">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeGaussianScale">◀</button>
+                </div>
+              </div>
+
             </div>
 
             <div class="form-section">
@@ -738,6 +777,100 @@
             </div>
 
             <div class="form-section">
+              <div class="form-section-title">Volume Rendering</div>
+              <div style="font-size: 11px; color: var(--fg-muted); margin-bottom: 8px;">
+                Requires volume data from PDB import.
+              </div>
+
+              <div class="checkbox-group">
+                <input id="volumeEnable" type="checkbox" />
+                <label for="volumeEnable">Enable volume</label>
+              </div>
+
+              <label for="volumeColor">Volume color</label>
+              <input id="volumeColor" type="color" value="#6fa4ff" />
+
+              <div style="height: 8px"></div>
+              <label for="volumeDensity">Density scale</label>
+              <div class="slider-input">
+                <input id="volumeDensity" type="range" min="0" max="5" step="0.05" value="1.0" />
+                <input type="text" class="value-input" data-for="volumeDensity" value="1.00" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeDensity">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeDensity">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <label for="volumeOpacity">Opacity scale</label>
+              <div class="slider-input">
+                <input id="volumeOpacity" type="range" min="0" max="2" step="0.05" value="1.0" />
+                <input type="text" class="value-input" data-for="volumeOpacity" value="1.00" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeOpacity">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeOpacity">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <label for="volumeStep">Ray step (Å)</label>
+              <div class="slider-input">
+                <input id="volumeStep" type="range" min="0.05" max="1.5" step="0.05" value="0.5" />
+                <input type="text" class="value-input" data-for="volumeStep" value="0.50" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeStep">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeStep">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <label for="volumeMaxSteps">Max steps</label>
+              <div class="slider-input">
+                <input id="volumeMaxSteps" type="range" min="16" max="1024" step="16" value="256" />
+                <input type="text" class="value-input" data-for="volumeMaxSteps" value="256" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeMaxSteps">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeMaxSteps">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <label for="volumeThreshold">Density threshold</label>
+              <div class="slider-input">
+                <input id="volumeThreshold" type="range" min="0" max="1" step="0.01" value="0.0" />
+                <input type="text" class="value-input" data-for="volumeThreshold" value="0.00" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="volumeThreshold">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="volumeThreshold">◀</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="form-section-title">Slice (triangles only)</div>
+              <div class="checkbox-group">
+                <input id="clipEnable" type="checkbox" />
+                <label for="clipEnable">Enable slice plane</label>
+              </div>
+
+              <label for="clipDistance">Slice distance (Å)</label>
+              <div class="slider-input">
+                <input id="clipDistance" type="range" min="0" max="100" step="0.1" value="0" />
+                <input type="text" class="value-input" data-for="clipDistance" value="0.0" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="clipDistance">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="clipDistance">◀</button>
+                </div>
+              </div>
+
+              <div style="height: 8px"></div>
+              <div class="checkbox-group">
+                <input id="clipLock" type="checkbox" />
+                <label for="clipLock">Lock plane direction</label>
+              </div>
+            </div>
+
+            <div class="form-section">
               <div class="form-section-title">Advanced</div>
 
               <label for="rayBias">Ray bias</label>
@@ -777,6 +910,7 @@
               <select id="materialSelect">
                 <option value="metallic" selected>Metallic (PBR)</option>
                 <option value="matte">Matte Protein</option>
+                <option value="surface-glass">Surface Glass</option>
               </select>
 
               <label for="baseColor">Base color (override)</label>
@@ -859,6 +993,47 @@
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="wrapDiffuse">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="wrapDiffuse">◀</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="material-surface">
+                <div style="height: 12px"></div>
+                <div class="checkbox-group">
+                  <input id="surfaceShowAtoms" type="checkbox" checked />
+                  <label for="surfaceShowAtoms">Show interior atoms/bonds</label>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="surfaceIor">Surface IOR</label>
+                <div class="slider-input">
+                  <input id="surfaceIor" type="range" min="1.0" max="2.5" step="0.01" value="1.33" />
+                  <input type="text" class="value-input" data-for="surfaceIor" value="1.33" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="surfaceIor">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="surfaceIor">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="surfaceTransmission">Transmission tint</label>
+                <div class="slider-input">
+                  <input id="surfaceTransmission" type="range" min="0" max="1" step="0.01" value="0.35" />
+                  <input type="text" class="value-input" data-for="surfaceTransmission" value="0.35" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="surfaceTransmission">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="surfaceTransmission">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="surfaceOpacity">Opacity</label>
+                <div class="slider-input">
+                  <input id="surfaceOpacity" type="range" min="0" max="1" step="0.01" value="0" />
+                  <input type="text" class="value-input" data-for="surfaceOpacity" value="0.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="surfaceOpacity">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="surfaceOpacity">◀</button>
                   </div>
                 </div>
               </div>

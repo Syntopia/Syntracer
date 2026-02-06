@@ -2,7 +2,7 @@ import { createLogger } from "./logger.js";
 import { loadGltfFromText } from "./gltf.js";
 import { buildUnifiedBVH, flattenBVH } from "./bvh.js";
 import {
-  packBvhNodes, packTriangles, packTriNormals, packTriColors, packPrimIndices,
+  packBvhNodes, packTriangles, packTriNormals, packTriColors, packTriFlags, packPrimIndices,
   packSpheres, packSphereColors, packCylinders, packCylinderColors
 } from "./packing.js";
 import { loadHDR, buildEnvSamplingData } from "./hdr.js";
@@ -16,17 +16,21 @@ import {
   getBuiltinMolecule,
   BUILTIN_MOLECULES
 } from "./molecular.js";
+import { buildBackboneCartoon, buildSheetHbondCylinders } from "./cartoon.js";
 import { computeSES, sesToTriangles } from "./surface.js";
 import { computeSESWasm, initSurfaceWasm, surfaceWasmReady } from "./surface_wasm.js";
 import { computeSESWebGL, webglSurfaceAvailable } from "./surface_webgl.js";
+import { buildNitrogenDensityVolume } from "./volume.js";
 import {
   initWebGL,
   createDataTexture,
   createEnvTexture,
   createCdfTexture,
+  createVolumeTexture,
   createAccumTargets,
   resizeAccumTargets,
   createTextureUnit,
+  createTextureUnit3D,
   setTraceUniforms,
   setDisplayUniforms,
   drawFullscreen,
@@ -56,6 +60,12 @@ const surfaceModeSelect = document.getElementById("surfaceMode");
 const probeRadiusInput = document.getElementById("probeRadius");
 const surfaceResolutionInput = document.getElementById("surfaceResolution");
 const smoothNormalsToggle = document.getElementById("smoothNormals");
+const volumeImportToggle = document.getElementById("volumeImportToggle");
+const volumeGridSpacing = document.getElementById("volumeGridSpacing");
+const volumeGaussianScale = document.getElementById("volumeGaussianScale");
+const clipEnableToggle = document.getElementById("clipEnable");
+const clipDistanceInput = document.getElementById("clipDistance");
+const clipLockToggle = document.getElementById("clipLock");
 const renderBtn = document.getElementById("renderBtn");
 const scaleSelect = document.getElementById("scaleSelect");
 const fastScaleSelect = document.getElementById("fastScaleSelect");
@@ -70,6 +80,11 @@ const matteSpecularInput = document.getElementById("matteSpecular");
 const matteRoughnessInput = document.getElementById("matteRoughness");
 const matteDiffuseRoughnessInput = document.getElementById("matteDiffuseRoughness");
 const wrapDiffuseInput = document.getElementById("wrapDiffuse");
+const surfaceShowAtomsToggle = document.getElementById("surfaceShowAtoms");
+const surfaceIorInput = document.getElementById("surfaceIor");
+const surfaceTransmissionInput = document.getElementById("surfaceTransmission");
+const showSheetHbondsToggle = document.getElementById("showSheetHbonds");
+const surfaceOpacityInput = document.getElementById("surfaceOpacity");
 const maxBouncesInput = document.getElementById("maxBounces");
 const exposureInput = document.getElementById("exposure");
 const ambientIntensityInput = document.getElementById("ambientIntensity");
@@ -80,6 +95,13 @@ const samplesPerBounceInput = document.getElementById("samplesPerBounce");
 const maxFramesInput = document.getElementById("maxFrames");
 const toneMapSelect = document.getElementById("toneMapSelect");
 const shadowToggle = document.getElementById("shadowToggle");
+const volumeEnableToggle = document.getElementById("volumeEnable");
+const volumeColorInput = document.getElementById("volumeColor");
+const volumeDensityInput = document.getElementById("volumeDensity");
+const volumeOpacityInput = document.getElementById("volumeOpacity");
+const volumeStepInput = document.getElementById("volumeStep");
+const volumeMaxStepsInput = document.getElementById("volumeMaxSteps");
+const volumeThresholdInput = document.getElementById("volumeThreshold");
 const light1Enable = document.getElementById("light1Enable");
 const light1Azimuth = document.getElementById("light1Azimuth");
 const light1Elevation = document.getElementById("light1Elevation");
@@ -104,6 +126,15 @@ let isRendering = false;
 let isLoading = false;
 let loggedFirstFrame = false;
 let glInitFailed = false;
+let lastMolContext = null;
+
+function hasSurfaceFlags(triFlags) {
+  if (!triFlags || triFlags.length === 0) return false;
+  for (let i = 0; i < triFlags.length; i += 1) {
+    if (triFlags[i] > 0.5) return true;
+  }
+  return false;
+}
 
 const cameraState = {
   target: [0, 0, 0],
@@ -131,7 +162,11 @@ const renderState = {
   matteRoughness: 0.5,
   matteDiffuseRoughness: 0.5,
   wrapDiffuse: 0.2,
-  maxBounces: 2,
+  surfaceShowAtoms: true,
+  surfaceIor: 1.33,
+  surfaceTransmission: 0.35,
+  surfaceOpacity: 0.0,
+  maxBounces: 4,
   maxFrames: 100,
   exposure: 1.0,
   toneMap: "aces",
@@ -145,12 +180,25 @@ const renderState = {
   tMin: 1e-5,
   samplesPerBounce: 1,
   castShadows: true,
+  volumeEnabled: false,
+  volumeColor: [0.435, 0.643, 1.0],
+  volumeDensity: 1.0,
+  volumeOpacity: 1.0,
+  volumeStep: 0.5,
+  volumeMaxSteps: 256,
+  volumeThreshold: 0.0,
   lights: [
     // Camera-relative studio lighting: key, fill, rim
     { enabled: true, azimuth: -40, elevation: -30, intensity: 5.0, angle: 22, color: [1.0, 1.0, 1.0] },
     { enabled: true, azimuth: 40, elevation: 0, intensity: 0.6, angle: 50, color: [1.0, 1.0, 1.0] },
     { enabled: true, azimuth: 170, elevation: 10, intensity: 0.35, angle: 6, color: [1.0, 1.0, 1.0] }
   ],
+  clipEnabled: false,
+  clipDistance: 0.0,
+  clipLocked: false,
+  clipLockedNormal: null,
+  clipLockedOffset: null,
+  clipLockedSide: null,
   visMode: 0
 };
 
@@ -190,6 +238,7 @@ async function loadGltfText(text, baseUrl = null) {
   // Empty sphere/cylinder arrays for glTF (will be populated by SDF/PDB loader)
   const spheres = [];
   const cylinders = [];
+  const triFlags = new Float32Array(indices.length / 3);
 
   logger.info("Building unified SAH BVH on CPU");
   const bvh = buildUnifiedBVH(
@@ -207,6 +256,8 @@ async function loadGltfText(text, baseUrl = null) {
     indices,
     normals,
     triColors,
+    triFlags,
+    hasSurfaceFlags: hasSurfaceFlags(triFlags),
     nodes: bvh.nodes,
     tris: bvh.tris,
     primitives: bvh.primitives,
@@ -218,6 +269,7 @@ async function loadGltfText(text, baseUrl = null) {
     cylinders,
     sceneScale: 1.0
   };
+  updateClipRange();
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
 
@@ -251,6 +303,7 @@ function loadTestPrimitives() {
   const indices = new Uint32Array(0);
   const normals = new Float32Array(0);
   const triColors = new Float32Array(0);
+  const triFlags = new Float32Array(0);
 
   // Test spheres - a small molecule-like arrangement
   const spheres = [
@@ -286,6 +339,8 @@ function loadTestPrimitives() {
     indices,
     normals,
     triColors,
+    triFlags,
+    hasSurfaceFlags: hasSurfaceFlags(triFlags),
     nodes: bvh.nodes,
     tris: bvh.tris,
     primitives: bvh.primitives,
@@ -297,6 +352,7 @@ function loadTestPrimitives() {
     cylinders,
     sceneScale: 1.0
   };
+  updateClipRange();
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
 
@@ -415,6 +471,8 @@ function loadRandomSpheres(count) {
     indices,
     normals,
     triColors,
+    triFlags,
+    hasSurfaceFlags: hasSurfaceFlags(triFlags),
     nodes: bvh.nodes,
     tris: bvh.tris,
     primitives: bvh.primitives,
@@ -426,6 +484,7 @@ function loadRandomSpheres(count) {
     cylinders,
     sceneScale: 1.0
   };
+  updateClipRange();
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
 
@@ -508,14 +567,74 @@ function getMolecularDisplayOptions() {
   // Adjust based on display style
   if (style === "vdw") {
     // Van der Waals: full-size atoms, no bonds shown
-    return { radiusScale: 1.0, bondRadius: 0, showBonds: false };
+    return { displayStyle: style, radiusScale: 1.0, bondRadius: 0, showBonds: false };
+  } else if (style === "cartoon") {
+    return { displayStyle: style, radiusScale: 0.0, bondRadius: 0.0, showBonds: false };
   } else if (style === "stick") {
     // Stick: tiny atoms, normal bonds
-    return { radiusScale: 0.15, bondRadius: bondRadius, showBonds: true };
+    return { displayStyle: style, radiusScale: 0.15, bondRadius: bondRadius, showBonds: true };
   } else {
     // Ball and stick: scaled atoms with bonds
-    return { radiusScale: atomScale, bondRadius: bondRadius, showBonds: true };
+    return { displayStyle: style, radiusScale: atomScale, bondRadius: bondRadius, showBonds: true };
   }
+}
+
+function requireNumberInput(input, label) {
+  if (!input) {
+    throw new Error(`${label} input is missing.`);
+  }
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number.`);
+  }
+  return value;
+}
+
+function getVolumeImportOptions({ requireEnabled = false } = {}) {
+  if (!volumeImportToggle) {
+    throw new Error("Volume import toggle is missing.");
+  }
+  const enabled = volumeImportToggle.checked;
+  if (!enabled && !requireEnabled) {
+    return { enabled: false };
+  }
+
+  const spacing = requireNumberInput(volumeGridSpacing, "Volume grid spacing");
+  const gaussianScale = requireNumberInput(volumeGaussianScale, "Gaussian scale");
+
+  if (spacing <= 0) {
+    throw new Error("Volume grid spacing must be > 0.");
+  }
+  if (gaussianScale <= 0) {
+    throw new Error("Gaussian scale must be > 0.");
+  }
+
+  return { enabled: true, spacing, gaussianScale };
+}
+
+function isLikelyPdbSource(filename, molData) {
+  if (filename && filename.toLowerCase().endsWith(".pdb")) {
+    return true;
+  }
+  return Boolean(molData && molData.secondary);
+}
+
+function buildNitrogenVolume(molData, volumeOpts) {
+  logger.info(
+    `Building nitrogen density volume (spacing=${volumeOpts.spacing}Å, gaussian=3xVdW, scale=${volumeOpts.gaussianScale})...`
+  );
+  const start = performance.now();
+  const volume = buildNitrogenDensityVolume(molData, {
+    spacing: volumeOpts.spacing,
+    gaussianScale: volumeOpts.gaussianScale,
+    cutoffSigma: 3.0
+  });
+  const elapsed = performance.now() - start;
+  const [nx, ny, nz] = volume.dims;
+  logger.info(
+    `Volume built in ${elapsed.toFixed(0)}ms: ${nx}x${ny}x${nz}, N atoms=${volume.nitrogenCount}, max=${volume.maxValue.toFixed(3)}`
+  );
+  return volume;
 }
 
 async function loadMolecularFile(text, filename) {
@@ -527,18 +646,75 @@ async function loadMolecularFile(text, filename) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  await loadMolecularGeometry(spheres, cylinders, molData, options);
+  const volumeOpts = getVolumeImportOptions();
+  let volumeData = null;
+  if (volumeOpts.enabled) {
+    if (!isLikelyPdbSource(filename, molData)) {
+      throw new Error("Volume import is only supported for PDB files.");
+    }
+    volumeData = buildNitrogenVolume(molData, volumeOpts);
+  }
+
+  const surfaceAtomMode = renderState.materialMode === "surface-glass" && renderState.surfaceShowAtoms ? "all" : "hetero";
+  lastMolContext = { spheres, cylinders, molData, options, volumeData, surfaceAtomMode };
+  await loadMolecularGeometry(spheres, cylinders, molData, options, volumeData, surfaceAtomMode);
+}
+
+function mergeTriangleMeshes(a, b) {
+  if (!a || a.positions.length === 0) return b;
+  if (!b || b.positions.length === 0) return a;
+
+  const aTriCount = a.indices.length / 3;
+  const bTriCount = b.indices.length / 3;
+
+  const positions = new Float32Array(a.positions.length + b.positions.length);
+  positions.set(a.positions, 0);
+  positions.set(b.positions, a.positions.length);
+
+  const normals = new Float32Array(a.normals.length + b.normals.length);
+  normals.set(a.normals, 0);
+  normals.set(b.normals, a.normals.length);
+
+  const indices = new Uint32Array(a.indices.length + b.indices.length);
+  indices.set(a.indices, 0);
+  const offset = a.positions.length / 3;
+  for (let i = 0; i < b.indices.length; i += 1) {
+    indices[a.indices.length + i] = b.indices[i] + offset;
+  }
+
+  const triColors = new Float32Array(a.triColors.length + b.triColors.length);
+  triColors.set(a.triColors, 0);
+  triColors.set(b.triColors, a.triColors.length);
+
+  const aFlags = a.triFlags && a.triFlags.length === aTriCount ? a.triFlags : new Float32Array(aTriCount);
+  const bFlags = b.triFlags && b.triFlags.length === bTriCount ? b.triFlags : new Float32Array(bTriCount);
+  const triFlags = new Float32Array(aFlags.length + bFlags.length);
+  triFlags.set(aFlags, 0);
+  triFlags.set(bFlags, aFlags.length);
+
+  return { positions, indices, normals, triColors, triFlags };
 }
 
 /**
  * Load molecular geometry from spheres and cylinders.
  */
-async function loadMolecularGeometry(spheres, cylinders, molData = null, options = null) {
+async function loadMolecularGeometry(
+  spheres,
+  cylinders,
+  molData = null,
+  options = null,
+  volumeData = null,
+  surfaceAtomMode = "hetero"
+) {
   const surfaceMode = surfaceModeSelect?.value || "none";
   const showSurface = surfaceMode !== "none";
   const displayOptions = options ?? getMolecularDisplayOptions();
+  const displayStyle = displayOptions.displayStyle || "ball-and-stick";
+  const heteroDisplayOptions = displayStyle === "cartoon"
+    ? { radiusScale: 0.4, bondRadius: 0.12, showBonds: true }
+    : displayOptions;
   const split = molData ? splitMolDataByHetatm(molData) : null;
-  const heteroGeometry = split ? moleculeToGeometry(split.hetero, displayOptions) : { spheres: [], cylinders: [] };
+  const heteroGeometry = split ? moleculeToGeometry(split.hetero, heteroDisplayOptions) : { spheres: [], cylinders: [] };
 
   // If showing surface, hide atoms/bonds unless it's VdW mode
   let displaySpheres = spheres;
@@ -548,6 +724,42 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
   let indices = new Uint32Array(0);
   let normals = new Float32Array(0);
   let triColors = new Float32Array(0);
+  let triFlags = new Float32Array(0);
+  let debugHbonds = [];
+
+  if (displayStyle === "cartoon" && molData) {
+    logger.info("Computing backbone cartoon (DSSP)...");
+    if (molData.secondary) {
+      const helixCount = molData.secondary.helices?.length || 0;
+      const sheetCount = molData.secondary.sheets?.length || 0;
+      if (helixCount + sheetCount > 0) {
+        logger.info(`PDB secondary structure: ${helixCount} helices, ${sheetCount} sheets`);
+      }
+    }
+    const cartoonStart = performance.now();
+    const cartoon = buildBackboneCartoon(molData, {
+      debugSheetOrientation: true,
+      debugLog: (msg) => logger.info(msg)
+    });
+    const cartoonTime = performance.now() - cartoonStart;
+    logger.info(`Cartoon built in ${cartoonTime.toFixed(0)}ms: ${cartoon.indices.length / 3} triangles`);
+
+    positions = cartoon.positions;
+    indices = cartoon.indices;
+    normals = cartoon.normals;
+    triColors = cartoon.triColors;
+    triFlags = new Float32Array(cartoon.indices.length / 3);
+
+    displaySpheres = heteroGeometry.spheres;
+    displayCylinders = heteroGeometry.cylinders;
+
+    if (showSheetHbondsToggle?.checked) {
+      debugHbonds = buildSheetHbondCylinders(molData);
+      if (debugHbonds.length > 0) {
+        logger.info(`Debug: ${debugHbonds.length} sheet H-bonds`);
+      }
+    }
+  }
 
   if (showSurface && molData && molData.atoms && molData.atoms.length > 0) {
     const surfaceAtoms = split ? split.standard.atoms : molData.atoms;
@@ -603,18 +815,47 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
       if (sesMesh.vertices.length > 0) {
 
         const surfaceData = sesToTriangles(sesMesh, [0.7, 0.75, 0.9]);
-        positions = surfaceData.positions;
-        indices = surfaceData.indices;
-        normals = surfaceData.normals;
-        triColors = surfaceData.triColors;
+        const surfaceFlags = new Float32Array(surfaceData.indices.length / 3);
+        surfaceFlags.fill(1);
+        const surfaceMesh = {
+          positions: surfaceData.positions,
+          indices: surfaceData.indices,
+          normals: surfaceData.normals,
+          triColors: surfaceData.triColors,
+          triFlags: surfaceFlags
+        };
 
-        // Keep HETATM atoms/bonds visible.
-        displaySpheres = heteroGeometry.spheres;
-        displayCylinders = heteroGeometry.cylinders;
+        if (displayStyle === "cartoon") {
+          const merged = mergeTriangleMeshes({ positions, indices, normals, triColors, triFlags }, surfaceMesh);
+          positions = merged.positions;
+          indices = merged.indices;
+          normals = merged.normals;
+          triColors = merged.triColors;
+          triFlags = merged.triFlags;
+        } else {
+          positions = surfaceData.positions;
+          indices = surfaceData.indices;
+          normals = surfaceData.normals;
+          triColors = surfaceData.triColors;
+          triFlags = surfaceFlags;
+        }
+
+        if (surfaceAtomMode === "all") {
+          displaySpheres = spheres;
+          displayCylinders = cylinders;
+        } else {
+          // Keep HETATM atoms/bonds visible.
+          displaySpheres = heteroGeometry.spheres;
+          displayCylinders = heteroGeometry.cylinders;
+        }
       } else {
         logger.warn("SES computation produced no surface");
       }
     }
+  }
+
+  if (debugHbonds.length > 0) {
+    displayCylinders = displayCylinders.concat(debugHbonds);
   }
 
   logger.info(`Loading ${displaySpheres.length} atoms, ${displayCylinders.length} bonds, ${indices.length / 3} triangles`);
@@ -638,6 +879,8 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
     indices,
     normals,
     triColors,
+    triFlags,
+    hasSurfaceFlags: hasSurfaceFlags(triFlags),
     nodes: bvh.nodes,
     tris: bvh.tris,
     primitives: bvh.primitives,
@@ -647,7 +890,9 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
     cylinderCount: bvh.cylinderCount,
     spheres: displaySpheres,
     cylinders: displayCylinders,
-    sceneScale: 1.0
+    surfaceAtomMode,
+    sceneScale: 1.0,
+    volume: volumeData
   };
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
@@ -655,6 +900,7 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
   // Compute bounds from all geometry
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let hasBounds = false;
 
   for (const s of displaySpheres) {
     minX = Math.min(minX, s.center[0] - s.radius);
@@ -663,6 +909,7 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
     maxX = Math.max(maxX, s.center[0] + s.radius);
     maxY = Math.max(maxY, s.center[1] + s.radius);
     maxZ = Math.max(maxZ, s.center[2] + s.radius);
+    hasBounds = true;
   }
 
   for (const c of displayCylinders) {
@@ -672,6 +919,7 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
     maxX = Math.max(maxX, c.p1[0] + c.radius, c.p2[0] + c.radius);
     maxY = Math.max(maxY, c.p1[1] + c.radius, c.p2[1] + c.radius);
     maxZ = Math.max(maxZ, c.p1[2] + c.radius, c.p2[2] + c.radius);
+    hasBounds = true;
   }
 
   // Include surface triangles in bounds
@@ -682,6 +930,30 @@ async function loadMolecularGeometry(spheres, cylinders, molData = null, options
     maxX = Math.max(maxX, positions[i]);
     maxY = Math.max(maxY, positions[i + 1]);
     maxZ = Math.max(maxZ, positions[i + 2]);
+    hasBounds = true;
+  }
+
+  if (volumeData && volumeData.bounds) {
+    if (!hasBounds) {
+      minX = volumeData.bounds.minX;
+      minY = volumeData.bounds.minY;
+      minZ = volumeData.bounds.minZ;
+      maxX = volumeData.bounds.maxX;
+      maxY = volumeData.bounds.maxY;
+      maxZ = volumeData.bounds.maxZ;
+      hasBounds = true;
+    } else {
+      minX = Math.min(minX, volumeData.bounds.minX);
+      minY = Math.min(minY, volumeData.bounds.minY);
+      minZ = Math.min(minZ, volumeData.bounds.minZ);
+      maxX = Math.max(maxX, volumeData.bounds.maxX);
+      maxY = Math.max(maxY, volumeData.bounds.maxY);
+      maxZ = Math.max(maxZ, volumeData.bounds.maxZ);
+    }
+  }
+
+  if (!hasBounds) {
+    throw new Error("Could not determine scene bounds (no geometry or volume data).");
   }
 
   const bounds = { minX, minY, minZ, maxX, maxY, maxZ };
@@ -718,7 +990,12 @@ async function loadPDBById(pdbId) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  await loadMolecularGeometry(spheres, cylinders, molData, options);
+  const volumeOpts = getVolumeImportOptions();
+  const volumeData = volumeOpts.enabled ? buildNitrogenVolume(molData, volumeOpts) : null;
+
+  const surfaceAtomMode = renderState.materialMode === "surface-glass" && renderState.surfaceShowAtoms ? "all" : "hetero";
+  lastMolContext = { spheres, cylinders, molData, options, volumeData, surfaceAtomMode };
+  await loadMolecularGeometry(spheres, cylinders, molData, options, volumeData, surfaceAtomMode);
 }
 
 /**
@@ -732,7 +1009,9 @@ async function loadBuiltinMolecule(name) {
   const options = getMolecularDisplayOptions();
   const { spheres, cylinders } = moleculeToGeometry(molData, options);
 
-  await loadMolecularGeometry(spheres, cylinders, molData, options);
+  const surfaceAtomMode = renderState.materialMode === "surface-glass" && renderState.surfaceShowAtoms ? "all" : "hetero";
+  lastMolContext = { spheres, cylinders, molData, options, volumeData: null, surfaceAtomMode };
+  await loadMolecularGeometry(spheres, cylinders, molData, options, null, surfaceAtomMode);
 }
 
 // Expose for debugging in console
@@ -823,6 +1102,10 @@ function updateMaterialState() {
   renderState.matteRoughness = clamp(Number(matteRoughnessInput?.value ?? 0.5), 0.1, 1.0);
   renderState.matteDiffuseRoughness = clamp(Number(matteDiffuseRoughnessInput?.value ?? 0.5), 0.0, 1.0);
   renderState.wrapDiffuse = clamp(Number(wrapDiffuseInput?.value ?? 0.2), 0.0, 0.5);
+  renderState.surfaceShowAtoms = surfaceShowAtomsToggle?.checked ?? true;
+  renderState.surfaceIor = clamp(Number(surfaceIorInput?.value ?? 1.33), 1.0, 2.5);
+  renderState.surfaceTransmission = clamp(Number(surfaceTransmissionInput?.value ?? 0.35), 0.0, 1.0);
+  renderState.surfaceOpacity = clamp(Number(surfaceOpacityInput?.value ?? 0.0), 0.0, 1.0);
   renderState.maxBounces = clamp(Number(maxBouncesInput.value), 0, 6);
   renderState.exposure = clamp(Number(exposureInput.value), 0, 5);
   renderState.ambientIntensity = clamp(Number(ambientIntensityInput.value), 0, 2);
@@ -836,18 +1119,124 @@ function updateMaterialState() {
   resetAccumulation("Material settings updated.");
 }
 
+function updateVolumeState() {
+  if (!volumeEnableToggle) {
+    throw new Error("Volume controls are missing.");
+  }
+  renderState.volumeEnabled = volumeEnableToggle.checked;
+  if (!volumeColorInput) {
+    throw new Error("Volume color input is missing.");
+  }
+  renderState.volumeColor = hexToRgb(volumeColorInput.value);
+
+  const density = requireNumberInput(volumeDensityInput, "Volume density");
+  const opacity = requireNumberInput(volumeOpacityInput, "Volume opacity");
+  const step = requireNumberInput(volumeStepInput, "Volume step");
+  const maxSteps = requireNumberInput(volumeMaxStepsInput, "Volume max steps");
+  const threshold = requireNumberInput(volumeThresholdInput, "Volume threshold");
+
+  if (density < 0) {
+    throw new Error("Volume density must be >= 0.");
+  }
+  if (opacity < 0) {
+    throw new Error("Volume opacity must be >= 0.");
+  }
+  if (step <= 0) {
+    throw new Error("Volume step must be > 0.");
+  }
+  if (maxSteps <= 0) {
+    throw new Error("Volume max steps must be > 0.");
+  }
+  if (threshold < 0 || threshold > 1) {
+    throw new Error("Volume threshold must be between 0 and 1.");
+  }
+
+  renderState.volumeDensity = density;
+  renderState.volumeOpacity = opacity;
+  renderState.volumeStep = step;
+  renderState.volumeMaxSteps = Math.floor(maxSteps);
+  renderState.volumeThreshold = threshold;
+
+  if (renderState.volumeEnabled && sceneData && !sceneData.volume) {
+    logger.warn("Volume enabled but no volume data is available. Reimport a PDB with volume enabled.");
+  }
+
+  resetAccumulation("Volume settings updated.");
+}
+
 function updateMaterialVisibility() {
   const mode = materialSelect?.value || "metallic";
   const metallicGroup = document.querySelector(".material-metallic");
   const matteGroup = document.querySelector(".material-matte");
+  const surfaceGroup = document.querySelector(".material-surface");
   if (metallicGroup) metallicGroup.style.display = mode === "metallic" ? "block" : "none";
   if (matteGroup) matteGroup.style.display = mode === "matte" ? "block" : "none";
+  if (surfaceGroup) surfaceGroup.style.display = mode === "surface-glass" ? "block" : "none";
+}
+
+async function refreshSurfaceAtomMode() {
+  if (!lastMolContext || !lastMolContext.molData) return;
+  const surfaceMode = surfaceModeSelect?.value || "none";
+  if (surfaceMode === "none") return;
+  const desiredMode = renderState.materialMode === "surface-glass" && renderState.surfaceShowAtoms ? "all" : "hetero";
+  if (lastMolContext.surfaceAtomMode === desiredMode) return;
+  lastMolContext.surfaceAtomMode = desiredMode;
+  logger.info(`Reloading molecular geometry for surface (${desiredMode} atoms).`);
+  await loadMolecularGeometry(
+    lastMolContext.spheres,
+    lastMolContext.cylinders,
+    lastMolContext.molData,
+    lastMolContext.options,
+    lastMolContext.volumeData,
+    desiredMode
+  );
 }
 
 function updateRenderLimits() {
   const raw = Number(maxFramesInput?.value);
   const maxFrames = clamp(Number.isFinite(raw) ? Math.floor(raw) : 0, 0, 2000);
   renderState.maxFrames = maxFrames;
+}
+
+function updateClipRange() {
+  if (!clipDistanceInput || !sceneData) return;
+  const max = Math.max(1, sceneData.sceneScale * 4);
+  clipDistanceInput.max = max.toFixed(2);
+  const current = Number(clipDistanceInput.value) || 0;
+  if (current > max) {
+    clipDistanceInput.value = max.toFixed(2);
+    clipDistanceInput.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+function updateClipState({ preserveLock = false } = {}) {
+  renderState.clipEnabled = clipEnableToggle?.checked || false;
+  renderState.clipDistance = clamp(Number(clipDistanceInput?.value ?? 0), 0, 1e6);
+  const lock = clipLockToggle?.checked || false;
+  if (lock) {
+    const cam = computeCameraVectors();
+    if (!renderState.clipLocked || !renderState.clipLockedNormal || !preserveLock) {
+      const len = Math.hypot(cam.forward[0], cam.forward[1], cam.forward[2]) || 1;
+      renderState.clipLockedNormal = [cam.forward[0] / len, cam.forward[1] / len, cam.forward[2] / len];
+    }
+    const n = renderState.clipLockedNormal;
+    if (n) {
+      const planePoint = [
+        cam.origin[0] + n[0] * renderState.clipDistance,
+        cam.origin[1] + n[1] * renderState.clipDistance,
+        cam.origin[2] + n[2] * renderState.clipDistance
+      ];
+      renderState.clipLockedOffset = n[0] * planePoint[0] + n[1] * planePoint[1] + n[2] * planePoint[2];
+      const camSide = n[0] * cam.origin[0] + n[1] * cam.origin[1] + n[2] * cam.origin[2] - renderState.clipLockedOffset;
+      renderState.clipLockedSide = camSide >= 0 ? 1 : -1;
+    }
+  } else {
+    renderState.clipLockedNormal = null;
+    renderState.clipLockedOffset = null;
+    renderState.clipLockedSide = null;
+  }
+  renderState.clipLocked = lock;
+  resetAccumulation("Slice plane updated.");
 }
 
 async function loadEnvironment(url) {
@@ -1150,6 +1539,7 @@ function ensureWebGL() {
     try {
       const { gl, traceProgram, displayProgram, vao } = initWebGL(canvas, logger);
       const blackEnvTex = createEnvTexture(gl, 1, 1, new Float32Array([0, 0, 0, 1]));
+      const dummyVolumeTex = createVolumeTexture(gl, 1, 1, 1, new Float32Array([0]));
       // Create dummy CDF textures (1x1 with value 1.0) for when no env is loaded
       const dummyCdfTex = createCdfTexture(gl, new Float32Array([0, 1]), 2, 1);
       glState = {
@@ -1162,6 +1552,9 @@ function ensureWebGL() {
         frameParity: 0,
         envTex: blackEnvTex,
         blackEnvTex,
+        volumeTex: dummyVolumeTex,
+        dummyVolumeTex,
+        volumeVersion: null,
         envMarginalCdfTex: dummyCdfTex,
         envConditionalCdfTex: dummyCdfTex,
         dummyCdfTex,
@@ -1181,6 +1574,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
   const tris = packTriangles(sceneData.tris, sceneData.positions, maxTextureSize);
   const triNormals = packTriNormals(sceneData.tris, sceneData.normals, maxTextureSize);
   const triColors = packTriColors(sceneData.triColors, maxTextureSize);
+  const triFlags = packTriFlags(sceneData.triFlags || new Float32Array(0), maxTextureSize);
   const primIndices = packPrimIndices(sceneData.primIndexBuffer, maxTextureSize);
   const spheresPacked = packSpheres(sceneData.spheres, maxTextureSize);
   const sphereColors = packSphereColors(sceneData.spheres, maxTextureSize);
@@ -1191,6 +1585,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
   const triTex = createDataTexture(gl, tris.width, tris.height, tris.data);
   const triNormalTex = createDataTexture(gl, triNormals.width, triNormals.height, triNormals.data);
   const triColorTex = createDataTexture(gl, triColors.width, triColors.height, triColors.data);
+  const triFlagTex = createDataTexture(gl, triFlags.width, triFlags.height, triFlags.data);
   const primIndexTex = createDataTexture(gl, primIndices.width, primIndices.height, primIndices.data);
   const sphereTex = createDataTexture(gl, spheresPacked.width, spheresPacked.height, spheresPacked.data);
   const sphereColorTex = createDataTexture(gl, sphereColors.width, sphereColors.height, sphereColors.data);
@@ -1202,6 +1597,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
     tris,
     triNormals,
     triColors,
+    triFlags,
     primIndices,
     spheresPacked,
     sphereColors,
@@ -1211,6 +1607,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
     triTex,
     triNormalTex,
     triColorTex,
+    triFlagTex,
     primIndexTex,
     sphereTex,
     sphereColorTex,
@@ -1267,6 +1664,39 @@ function renderFrame() {
     glState.envUrl = renderState.envUrl;
   }
 
+  let volumeEnabled = renderState.volumeEnabled ? 1 : 0;
+  let volumeMin = [0, 0, 0];
+  let volumeMax = [0, 0, 0];
+  let volumeInvSize = [0, 0, 0];
+  let volumeMaxValue = 1.0;
+
+  if (volumeEnabled) {
+    if (!sceneData.volume) {
+      throw new Error("Volume rendering enabled but no volume data is available. Reimport a PDB with volume enabled.");
+    }
+    const volume = sceneData.volume;
+    const [nx, ny, nz] = volume.dims;
+    if (!glState.volumeTex || glState.volumeVersion !== volume.version) {
+      if (glState.volumeTex && glState.volumeTex !== glState.dummyVolumeTex) {
+        gl.deleteTexture(glState.volumeTex);
+      }
+      logger.info(`Uploading volume texture (${nx}x${ny}x${nz})`);
+      glState.volumeTex = createVolumeTexture(gl, nx, ny, nz, volume.data);
+      glState.volumeVersion = volume.version;
+    }
+    volumeMin = [volume.bounds.minX, volume.bounds.minY, volume.bounds.minZ];
+    volumeMax = [volume.bounds.maxX, volume.bounds.maxY, volume.bounds.maxZ];
+    const sizeX = volumeMax[0] - volumeMin[0];
+    const sizeY = volumeMax[1] - volumeMin[1];
+    const sizeZ = volumeMax[2] - volumeMin[2];
+    volumeInvSize = [
+      sizeX > 0 ? 1 / sizeX : 0,
+      sizeY > 0 ? 1 / sizeY : 0,
+      sizeZ > 0 ? 1 / sizeZ : 0
+    ];
+    volumeMaxValue = volume.maxValue;
+  }
+
   if (!renderState.useBvh && sceneData.triCount > MAX_BRUTE_FORCE_TRIS) {
     throw new Error(
       `Brute force mode supports up to ${MAX_BRUTE_FORCE_TRIS} triangles; scene has ${sceneData.triCount}.`
@@ -1291,6 +1721,31 @@ function renderFrame() {
   const lightDirs = renderState.lights.map((light) =>
     cameraRelativeLightDir(light.azimuth, light.elevation, camForward, camRight, camUp)
   );
+  const clipEnabled = renderState.clipEnabled ? 1 : 0;
+  let clipNormal = camForward;
+  let clipOffset = 0.0;
+  let clipSide = 1.0;
+  if (renderState.clipLocked && renderState.clipLockedNormal) {
+    clipNormal = renderState.clipLockedNormal;
+    if (renderState.clipLockedOffset != null) {
+      clipOffset = renderState.clipLockedOffset;
+    }
+    if (renderState.clipLockedSide != null) {
+      clipSide = renderState.clipLockedSide;
+    }
+  }
+  if (clipEnabled && !(renderState.clipLocked && renderState.clipLockedOffset != null)) {
+    const planePoint = [
+      camera.origin[0] + clipNormal[0] * renderState.clipDistance,
+      camera.origin[1] + clipNormal[1] * renderState.clipDistance,
+      camera.origin[2] + clipNormal[2] * renderState.clipDistance
+    ];
+    clipOffset = clipNormal[0] * planePoint[0] + clipNormal[1] * planePoint[1] + clipNormal[2] * planePoint[2];
+  }
+  if (clipEnabled && !(renderState.clipLocked && renderState.clipLockedSide != null)) {
+    const camSide = clipNormal[0] * camera.origin[0] + clipNormal[1] * camera.origin[1] + clipNormal[2] * camera.origin[2] - clipOffset;
+    clipSide = camSide >= 0 ? 1 : -1;
+  }
 
   gl.disable(gl.DEPTH_TEST);
   gl.bindVertexArray(vao);
@@ -1318,12 +1773,15 @@ function renderFrame() {
   createTextureUnit(gl, glState.textures.sphereColorTex, 10);
   createTextureUnit(gl, glState.textures.cylinderTex, 11);
   createTextureUnit(gl, glState.textures.cylinderColorTex, 12);
+  createTextureUnit3D(gl, glState.volumeTex || glState.dummyVolumeTex, 13);
+  createTextureUnit(gl, glState.textures.triFlagTex, 14);
 
 setTraceUniforms(gl, traceProgram, {
     bvhUnit: 0,
     triUnit: 1,
     triNormalUnit: 2,
     triColorUnit: 3,
+    triFlagUnit: 14,
     primIndexUnit: 4,
     accumUnit: 5,
     envUnit: 6,
@@ -1331,6 +1789,7 @@ setTraceUniforms(gl, traceProgram, {
     sphereColorUnit: 10,
     cylinderUnit: 11,
     cylinderColorUnit: 12,
+    volumeUnit: 13,
     camOrigin: camera.origin,
     camRight: camera.right,
     camUp: camera.up,
@@ -1340,6 +1799,7 @@ setTraceUniforms(gl, traceProgram, {
     triTexSize: [glState.textures.tris.width, glState.textures.tris.height],
     triNormalTexSize: [glState.textures.triNormals.width, glState.textures.triNormals.height],
     triColorTexSize: [glState.textures.triColors.width, glState.textures.triColors.height],
+    triFlagTexSize: [glState.textures.triFlags.width, glState.textures.triFlags.height],
     primIndexTexSize: [glState.textures.primIndices.width, glState.textures.primIndices.height],
     sphereTexSize: [glState.textures.spheresPacked.width, glState.textures.spheresPacked.height],
     cylinderTexSize: [glState.textures.cylindersPacked.width, glState.textures.cylindersPacked.height],
@@ -1348,6 +1808,17 @@ setTraceUniforms(gl, traceProgram, {
     triCount: sceneData.triCount,
     sphereCount: sceneData.sphereCount,
     cylinderCount: sceneData.cylinderCount,
+    volumeEnabled,
+    volumeMin,
+    volumeMax,
+    volumeInvSize,
+    volumeMaxValue,
+    volumeColor: renderState.volumeColor,
+    volumeDensity: renderState.volumeDensity,
+    volumeOpacity: renderState.volumeOpacity,
+    volumeStep: renderState.volumeStep,
+    volumeMaxSteps: renderState.volumeMaxSteps,
+    volumeThreshold: renderState.volumeThreshold,
     useBvh: renderState.useBvh ? 1 : 0,
     useGltfColor: renderState.useGltfColor ? 1 : 0,
     baseColor: renderState.baseColor,
@@ -1366,6 +1837,10 @@ setTraceUniforms(gl, traceProgram, {
     matteRoughness: renderState.matteRoughness,
     matteDiffuseRoughness: renderState.matteDiffuseRoughness,
     wrapDiffuse: renderState.wrapDiffuse,
+    surfaceIor: renderState.surfaceIor,
+    surfaceTransmission: renderState.surfaceTransmission,
+    surfaceOpacity: renderState.surfaceOpacity,
+    surfaceFlagMode: sceneData.hasSurfaceFlags ? 1 : 0,
     envMarginalCdfUnit: 7,
     envConditionalCdfUnit: 8,
     envSize: glState.envSize || [1, 1],
@@ -1375,6 +1850,10 @@ setTraceUniforms(gl, traceProgram, {
     tMin: renderState.tMin,
     lights: renderState.lights,
     lightDirs,
+    clipEnabled,
+    clipNormal,
+    clipOffset,
+    clipSide,
     visMode: renderState.visMode
   });
 
@@ -1784,6 +2263,9 @@ bruteforceToggle.addEventListener("change", () => {
 });
 
 useGltfColorToggle.addEventListener("change", updateMaterialState);
+clipEnableToggle?.addEventListener("change", () => updateClipState({ preserveLock: true }));
+clipDistanceInput?.addEventListener("input", () => updateClipState({ preserveLock: true }));
+clipLockToggle?.addEventListener("change", () => updateClipState({ preserveLock: false }));
 surfaceModeSelect?.addEventListener("change", async () => {
   const mode = surfaceModeSelect.value;
   if (mode === "wasm") {
@@ -1801,10 +2283,12 @@ surfaceModeSelect?.addEventListener("change", async () => {
       logger.info("WebGL surface computation available.");
     }
   }
+  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
 });
 materialSelect?.addEventListener("change", () => {
   updateMaterialVisibility();
   updateMaterialState();
+  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
 });
 baseColorInput.addEventListener("input", updateMaterialState);
 metallicInput.addEventListener("input", updateMaterialState);
@@ -1814,6 +2298,27 @@ matteSpecularInput?.addEventListener("input", updateMaterialState);
 matteRoughnessInput?.addEventListener("input", updateMaterialState);
 matteDiffuseRoughnessInput?.addEventListener("input", updateMaterialState);
 wrapDiffuseInput?.addEventListener("input", updateMaterialState);
+surfaceShowAtomsToggle?.addEventListener("change", () => {
+  updateMaterialState();
+  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
+});
+surfaceIorInput?.addEventListener("input", updateMaterialState);
+surfaceTransmissionInput?.addEventListener("input", updateMaterialState);
+showSheetHbondsToggle?.addEventListener("change", () => {
+  if (!lastMolContext || !lastMolContext.molData) {
+    logger.error("No molecular data loaded for sheet H-bond debug rendering.");
+    return;
+  }
+  loadMolecularGeometry(
+    lastMolContext.spheres,
+    lastMolContext.cylinders,
+    lastMolContext.molData,
+    lastMolContext.options,
+    lastMolContext.volumeData,
+    lastMolContext.surfaceAtomMode
+  ).catch((err) => logger.error(err.message || String(err)));
+});
+surfaceOpacityInput?.addEventListener("input", updateMaterialState);
 maxBouncesInput.addEventListener("input", updateMaterialState);
 exposureInput.addEventListener("input", updateMaterialState);
 toneMapSelect?.addEventListener("change", updateMaterialState);
@@ -1824,6 +2329,56 @@ tMinInput.addEventListener("input", updateMaterialState);
 samplesPerBounceInput.addEventListener("input", updateMaterialState);
 maxFramesInput?.addEventListener("input", updateRenderLimits);
 shadowToggle.addEventListener("change", updateMaterialState);
+
+volumeEnableToggle?.addEventListener("change", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeColorInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeDensityInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeOpacityInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeStepInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeMaxStepsInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
+volumeThresholdInput?.addEventListener("input", () => {
+  try {
+    updateVolumeState();
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
+});
 
 light1Enable.addEventListener("change", updateLightState);
 light1Azimuth.addEventListener("input", updateLightState);
@@ -1888,6 +2443,7 @@ loadEnvManifest().then(() => {
 
   updateMaterialState();
   updateMaterialVisibility();
+  updateClipState({ preserveLock: true });
   updateRenderLimits();
   updateLightState();
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));

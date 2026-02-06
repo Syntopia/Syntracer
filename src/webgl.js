@@ -22,6 +22,8 @@ void main() {
 const TRACE_FS = `#version 300 es
 precision highp float;
 precision highp int;
+precision highp sampler2D;
+precision highp sampler3D;
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;
@@ -30,11 +32,13 @@ uniform sampler2D uBvhTex;
 uniform sampler2D uTriTex;
 uniform sampler2D uTriNormalTex;
 uniform sampler2D uTriColorTex;
+uniform sampler2D uTriFlagTex;
 uniform sampler2D uPrimIndexTex;
 uniform sampler2D uSphereTex;
 uniform sampler2D uSphereColorTex;
 uniform sampler2D uCylinderTex;
 uniform sampler2D uCylinderColorTex;
+uniform sampler3D uVolumeTex;
 uniform sampler2D uAccumTex;
 uniform sampler2D uEnvTex;
 uniform vec3 uCamOrigin;
@@ -46,6 +50,7 @@ uniform vec2 uBvhTexSize;
 uniform vec2 uTriTexSize;
 uniform vec2 uTriNormalTexSize;
 uniform vec2 uTriColorTexSize;
+uniform vec2 uTriFlagTexSize;
 uniform vec2 uPrimIndexTexSize;
 uniform vec2 uSphereTexSize;
 uniform vec2 uCylinderTexSize;
@@ -53,6 +58,17 @@ uniform int uFrameIndex;
 uniform int uTriCount;
 uniform int uSphereCount;
 uniform int uCylinderCount;
+uniform int uVolumeEnabled;
+uniform vec3 uVolumeMin;
+uniform vec3 uVolumeMax;
+uniform vec3 uVolumeInvSize;
+uniform float uVolumeMaxValue;
+uniform vec3 uVolumeColor;
+uniform float uVolumeDensity;
+uniform float uVolumeOpacity;
+uniform float uVolumeStep;
+uniform int uVolumeMaxSteps;
+uniform float uVolumeThreshold;
 
 // Primitive type constants
 const int PRIM_TRIANGLE = 0;
@@ -68,7 +84,15 @@ uniform float uMatteSpecular;
 uniform float uMatteRoughness;
 uniform float uMatteDiffuseRoughness;
 uniform float uWrapDiffuse;
+uniform float uSurfaceIor;
+uniform float uSurfaceTransmission;
+uniform float uSurfaceOpacity;
+uniform int uSurfaceFlagMode;
 uniform float uRimBoost;
+uniform int uClipEnabled;
+uniform vec3 uClipNormal;
+uniform float uClipOffset;
+uniform float uClipSide;
 uniform int uMaxBounces;
 uniform float uExposure;
 uniform float uAmbientIntensity;
@@ -93,6 +117,7 @@ uniform float uLightAngle[3];
 uniform int uVisMode;
 
 const float PI = 3.14159265359;
+const int MAX_VOLUME_STEPS = 1024;
 
 float powerHeuristic(float pdfA, float pdfB);
 float brdfPdf(vec3 N, vec3 V, vec3 L, float roughness, float specProb);
@@ -119,6 +144,10 @@ vec3 fetchTriNormal(int triIndex, vec3 bary) {
 
 vec3 fetchTriColor(int triIndex) {
   return fetchTexel(uTriColorTex, triIndex, ivec2(uTriColorTexSize)).rgb;
+}
+
+float fetchTriFlag(int triIndex) {
+  return fetchTexel(uTriFlagTex, triIndex, ivec2(uTriFlagTexSize)).r;
 }
 
 void fetchTriVerts(int triIndex, out vec3 v0, out vec3 v1, out vec3 v2) {
@@ -281,6 +310,54 @@ bool intersectAABB(vec3 bmin, vec3 bmax, vec3 origin, vec3 dir, float tMax) {
   return tmax >= max(tmin, 0.0);
 }
 
+bool intersectAabbRange(vec3 bmin, vec3 bmax, vec3 origin, vec3 dir, out float tNear, out float tFar) {
+  float tmin = -1e20;
+  float tmax = 1e20;
+
+  if (abs(dir.x) < 1e-8) {
+    if (origin.x < bmin.x || origin.x > bmax.x) return false;
+  } else {
+    float inv = 1.0 / dir.x;
+    float t1 = (bmin.x - origin.x) * inv;
+    float t2 = (bmax.x - origin.x) * inv;
+    float tNearAxis = min(t1, t2);
+    float tFarAxis = max(t1, t2);
+    tmin = max(tmin, tNearAxis);
+    tmax = min(tmax, tFarAxis);
+    if (tmax < tmin) return false;
+  }
+
+  if (abs(dir.y) < 1e-8) {
+    if (origin.y < bmin.y || origin.y > bmax.y) return false;
+  } else {
+    float inv = 1.0 / dir.y;
+    float t1 = (bmin.y - origin.y) * inv;
+    float t2 = (bmax.y - origin.y) * inv;
+    float tNearAxis = min(t1, t2);
+    float tFarAxis = max(t1, t2);
+    tmin = max(tmin, tNearAxis);
+    tmax = min(tmax, tFarAxis);
+    if (tmax < tmin) return false;
+  }
+
+  if (abs(dir.z) < 1e-8) {
+    if (origin.z < bmin.z || origin.z > bmax.z) return false;
+  } else {
+    float inv = 1.0 / dir.z;
+    float t1 = (bmin.z - origin.z) * inv;
+    float t2 = (bmax.z - origin.z) * inv;
+    float tNearAxis = min(t1, t2);
+    float tFarAxis = max(t1, t2);
+    tmin = max(tmin, tNearAxis);
+    tmax = min(tmax, tFarAxis);
+    if (tmax < tmin) return false;
+  }
+
+  tNear = tmin;
+  tFar = tmax;
+  return tmax >= max(tmin, 0.0);
+}
+
 vec4 intersectTri(vec3 origin, vec3 dir, vec3 v0, vec3 v1, vec3 v2) {
   vec3 e1 = v1 - v0;
   vec3 e2 = v2 - v0;
@@ -300,6 +377,13 @@ vec4 intersectTri(vec3 origin, vec3 dir, vec3 v0, vec3 v1, vec3 v2) {
   float t = dot(e2, q) * invDet;
   if (t <= uTMin) {
     return vec4(-1.0);
+  }
+  if (uClipEnabled == 1) {
+    vec3 hitPos = origin + dir * t;
+    float side = dot(uClipNormal, hitPos) - uClipOffset;
+    if (side * uClipSide > 0.0) {
+      return vec4(-1.0);
+    }
   }
   return vec4(t, u, v, 1.0);
 }
@@ -325,6 +409,12 @@ void fetchCylinder(int cylIndex, out vec3 p1, out vec3 p2, out float radius) {
 
 vec3 fetchCylinderColor(int cylIndex) {
   return fetchTexel(uCylinderColorTex, cylIndex, ivec2(uCylinderTexSize)).rgb;
+}
+
+float sampleVolume(vec3 pos) {
+  vec3 uvw = (pos - uVolumeMin) * uVolumeInvSize;
+  uvw = clamp(uvw, vec3(0.0), vec3(1.0));
+  return texture(uVolumeTex, uvw).r;
 }
 
 // Sphere intersection: returns vec2(t, 0) or vec2(-1, 0) if no hit
@@ -948,6 +1038,21 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
   return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+float fresnelSchlickScalar(float cosTheta, float F0) {
+  return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+bool refractDir(vec3 I, vec3 N, float eta, out vec3 T) {
+  float cosi = clamp(dot(-I, N), 0.0, 1.0);
+  float sin2 = eta * eta * (1.0 - cosi * cosi);
+  if (sin2 > 1.0) {
+    return false;
+  }
+  float cost = sqrt(1.0 - sin2);
+  T = eta * I + (eta * cosi - cost) * N;
+  return true;
+}
+
 float distributionGGX(float NdotH, float roughness) {
   float a = roughness * roughness;
   float a2 = a * a;
@@ -970,11 +1075,12 @@ float geometrySmith(float NdotV, float NdotL, float roughness) {
 vec3 shadeDirect(vec3 hitPos, vec3 shadingNormal, vec3 geomNormal, vec3 baseColor, vec3 V, inout uint seed) {
   vec3 direct = vec3(0.0);
   float bias = max(uRayBias, 1e-4);
-  float metallic = (uMaterialMode == 1) ? 0.0 : uMetallic;
-  float rough = (uMaterialMode == 1) ? uMatteRoughness : uRoughness;
-  float diffRough = (uMaterialMode == 1) ? uMatteDiffuseRoughness : 0.0;
-  float wrap = (uMaterialMode == 1) ? uWrapDiffuse : 0.0;
-  vec3 F0 = (uMaterialMode == 1) ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
+  bool useMatte = uMaterialMode != 0;
+  float metallic = useMatte ? 0.0 : uMetallic;
+  float rough = useMatte ? uMatteRoughness : uRoughness;
+  float diffRough = useMatte ? uMatteDiffuseRoughness : 0.0;
+  float wrap = useMatte ? uWrapDiffuse : 0.0;
+  vec3 F0 = useMatte ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
   for (int i = 0; i < 3; i += 1) {
     if (uLightEnabled[i] == 0) {
       continue;
@@ -1061,6 +1167,40 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     vec3 extra;
     int dummyCost;
     bool hit = traceClosest(origin, dir, t, primType, primIndex, extra, dummyCost);
+    float tSurface = hit ? t : 1e20;
+
+    if (uVolumeEnabled == 1 && uVolumeMaxSteps > 0 && uVolumeStep > 0.0) {
+      float tEnter;
+      float tExit;
+      if (intersectAabbRange(uVolumeMin, uVolumeMax, origin, dir, tEnter, tExit)) {
+        tEnter = max(tEnter, uTMin);
+        tExit = min(tExit, tSurface);
+        if (tExit > tEnter) {
+          float tCurrent = tEnter;
+          float invMax = 1.0 / max(uVolumeMaxValue, 1e-6);
+          for (int i = 0; i < MAX_VOLUME_STEPS; i += 1) {
+            if (i >= uVolumeMaxSteps) break;
+            if (tCurrent > tExit) break;
+            float stepSize = min(uVolumeStep, tExit - tCurrent);
+            vec3 pos = origin + dir * tCurrent;
+            float density = sampleVolume(pos) * invMax;
+            density = max(0.0, density - uVolumeThreshold);
+            if (density > 0.0) {
+              float alpha = 1.0 - exp(-density * uVolumeDensity * stepSize);
+              alpha = clamp(alpha * uVolumeOpacity, 0.0, 1.0);
+              radiance += throughput * uVolumeColor * alpha;
+              throughput *= (1.0 - alpha);
+              if (maxComponent(throughput) < 1e-3) {
+                throughput = vec3(0.0);
+                break;
+              }
+            }
+            tCurrent += uVolumeStep;
+          }
+        }
+      }
+    }
+
     if (!hit) {
       vec3 envContrib = uAmbientColor * uAmbientIntensity + sampleEnv(dir);
       // Apply MIS weight for environment hit via BRDF sampling
@@ -1076,18 +1216,19 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     }
 
     vec3 hitPos = origin + dir * t;
+    vec3 geomNormalRaw;
     vec3 geomNormal;
     vec3 shadingNormal;
     vec3 baseColor;
+    bool frontFace = true;
 
     if (primType == PRIM_TRIANGLE) {
       vec3 bary = vec3(1.0 - extra.x - extra.y, extra.x, extra.y);
       vec3 v0, v1, v2;
       fetchTriVerts(primIndex, v0, v1, v2);
-      geomNormal = normalize(cross(v1 - v0, v2 - v0));
-      if (dot(geomNormal, dir) > 0.0) {
-        geomNormal = -geomNormal;
-      }
+      geomNormalRaw = normalize(cross(v1 - v0, v2 - v0));
+      frontFace = dot(geomNormalRaw, dir) < 0.0;
+      geomNormal = frontFace ? geomNormalRaw : -geomNormalRaw;
       shadingNormal = fetchTriNormal(primIndex, bary);
       if (dot(shadingNormal, geomNormal) < 0.0) {
         shadingNormal = -shadingNormal;
@@ -1095,35 +1236,62 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
       baseColor = mix(uBaseColor, fetchTriColor(primIndex), float(uUseGltfColor));
     } else if (primType == PRIM_SPHERE) {
       vec4 s = fetchSphere(primIndex);
-      geomNormal = normalize(hitPos - s.xyz);
-      if (dot(geomNormal, dir) > 0.0) {
-        geomNormal = -geomNormal;
-      }
+      geomNormalRaw = normalize(hitPos - s.xyz);
+      frontFace = dot(geomNormalRaw, dir) < 0.0;
+      geomNormal = frontFace ? geomNormalRaw : -geomNormalRaw;
       shadingNormal = geomNormal;
       baseColor = mix(uBaseColor, fetchSphereColor(primIndex), float(uUseGltfColor));
     } else { // PRIM_CYLINDER
       vec3 p1, p2; float radius;
       fetchCylinder(primIndex, p1, p2, radius);
       float hitType = extra.x;
-      geomNormal = cylinderNormal(hitPos, p1, p2, radius, hitType);
-      if (dot(geomNormal, dir) > 0.0) {
-        geomNormal = -geomNormal;
-      }
+      geomNormalRaw = cylinderNormal(hitPos, p1, p2, radius, hitType);
+      frontFace = dot(geomNormalRaw, dir) < 0.0;
+      geomNormal = frontFace ? geomNormalRaw : -geomNormalRaw;
       shadingNormal = geomNormal;
       baseColor = mix(uBaseColor, fetchCylinderColor(primIndex), float(uUseGltfColor));
     }
 
     vec3 V = normalize(-dir);
 
+    if (uMaterialMode == 2 && primType == PRIM_TRIANGLE && (uSurfaceFlagMode == 0 || fetchTriFlag(primIndex) > 0.5)) {
+      // Check opacity first - if opaque, fall through to normal surface shading
+      if (rand(seed) >= uSurfaceOpacity) {
+        vec3 N = geomNormal;
+        float cosi = clamp(dot(-dir, N), 0.0, 1.0);
+        float f0 = (uSurfaceIor - 1.0) / (uSurfaceIor + 1.0);
+        f0 = f0 * f0;
+        float F = fresnelSchlickScalar(cosi, f0);
+        float eta = frontFace ? (1.0 / max(uSurfaceIor, 1e-3)) : max(uSurfaceIor, 1e-3);
+        vec3 refrDir;
+        bool canRefract = refractDir(dir, N, eta, refrDir);
+        float reflectProb = canRefract ? F : 1.0;
+
+        if (rand(seed) < reflectProb) {
+          dir = normalize(reflect(dir, N));
+          origin = hitPos + N * bias;
+        } else {
+          dir = normalize(refrDir);
+          vec3 tint = mix(vec3(1.0), baseColor, uSurfaceTransmission);
+          throughput *= tint;
+          origin = hitPos - N * bias;
+        }
+        lastBrdfPdf = 0.0;
+        continue;
+      }
+      // Fall through to opaque surface handling when opacity check passes
+    }
+
     // Direct lighting from analytical lights
     vec3 direct = shadeDirect(hitPos, shadingNormal, geomNormal, baseColor, V, seed);
     radiance += throughput * direct;
 
-    float metallic = (uMaterialMode == 1) ? 0.0 : uMetallic;
-    float rough = (uMaterialMode == 1) ? uMatteRoughness : uRoughness;
-    float diffRough = (uMaterialMode == 1) ? uMatteDiffuseRoughness : 0.0;
-    float wrap = (uMaterialMode == 1) ? uWrapDiffuse : 0.0;
-    vec3 F0 = (uMaterialMode == 1) ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
+    bool useMatte = uMaterialMode != 0;
+    float metallic = useMatte ? 0.0 : uMetallic;
+    float rough = useMatte ? uMatteRoughness : uRoughness;
+    float diffRough = useMatte ? uMatteDiffuseRoughness : 0.0;
+    float wrap = useMatte ? uWrapDiffuse : 0.0;
+    vec3 F0 = useMatte ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
 
     if (bounce == 0 && uMaterialMode == 0 && uRimBoost > 0.0) {
       float NdotV = max(dot(shadingNormal, V), 0.0);
@@ -1490,6 +1658,20 @@ export function createDataTexture(gl, width, height, data) {
   return createFloatTexture(gl, width, height, data);
 }
 
+export function createVolumeTexture(gl, width, height, depth, data) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_3D, tex);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.R32F, width, height, depth, 0, gl.RED, gl.FLOAT, data);
+  gl.bindTexture(gl.TEXTURE_3D, null);
+  return tex;
+}
+
 export function createAccumTargets(gl, width, height) {
   const texA = createFloatTexture(gl, width, height, null);
   const texB = createFloatTexture(gl, width, height, null);
@@ -1517,17 +1699,24 @@ export function createTextureUnit(gl, texture, unit) {
   gl.bindTexture(gl.TEXTURE_2D, texture);
 }
 
+export function createTextureUnit3D(gl, texture, unit) {
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_3D, texture);
+}
+
 export function setTraceUniforms(gl, program, uniforms) {
   gl.useProgram(program);
   gl.uniform1i(gl.getUniformLocation(program, "uBvhTex"), uniforms.bvhUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uTriTex"), uniforms.triUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uTriNormalTex"), uniforms.triNormalUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uTriColorTex"), uniforms.triColorUnit);
+  gl.uniform1i(gl.getUniformLocation(program, "uTriFlagTex"), uniforms.triFlagUnit ?? 14);
   gl.uniform1i(gl.getUniformLocation(program, "uPrimIndexTex"), uniforms.primIndexUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uSphereTex"), uniforms.sphereUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uSphereColorTex"), uniforms.sphereColorUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderTex"), uniforms.cylinderUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderColorTex"), uniforms.cylinderColorUnit);
+  gl.uniform1i(gl.getUniformLocation(program, "uVolumeTex"), uniforms.volumeUnit ?? 13);
   gl.uniform1i(gl.getUniformLocation(program, "uAccumTex"), uniforms.accumUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uEnvTex"), uniforms.envUnit);
   gl.uniform3fv(gl.getUniformLocation(program, "uCamOrigin"), uniforms.camOrigin);
@@ -1539,6 +1728,7 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform2fv(gl.getUniformLocation(program, "uTriTexSize"), uniforms.triTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uTriNormalTexSize"), uniforms.triNormalTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uTriColorTexSize"), uniforms.triColorTexSize);
+  gl.uniform2fv(gl.getUniformLocation(program, "uTriFlagTexSize"), uniforms.triFlagTexSize ?? [1, 1]);
   gl.uniform2fv(gl.getUniformLocation(program, "uPrimIndexTexSize"), uniforms.primIndexTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uSphereTexSize"), uniforms.sphereTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uCylinderTexSize"), uniforms.cylinderTexSize);
@@ -1546,18 +1736,42 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1i(gl.getUniformLocation(program, "uTriCount"), uniforms.triCount);
   gl.uniform1i(gl.getUniformLocation(program, "uSphereCount"), uniforms.sphereCount);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderCount"), uniforms.cylinderCount);
+  gl.uniform1i(gl.getUniformLocation(program, "uVolumeEnabled"), uniforms.volumeEnabled ?? 0);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumeMin"), uniforms.volumeMin ?? [0, 0, 0]);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumeMax"), uniforms.volumeMax ?? [0, 0, 0]);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumeInvSize"), uniforms.volumeInvSize ?? [0, 0, 0]);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeMaxValue"), uniforms.volumeMaxValue ?? 1.0);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumeColor"), uniforms.volumeColor ?? [1, 1, 1]);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeDensity"), uniforms.volumeDensity ?? 0.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeOpacity"), uniforms.volumeOpacity ?? 0.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeStep"), uniforms.volumeStep ?? 0.0);
+  gl.uniform1i(gl.getUniformLocation(program, "uVolumeMaxSteps"), uniforms.volumeMaxSteps ?? 0);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeThreshold"), uniforms.volumeThreshold ?? 0.0);
   gl.uniform1i(gl.getUniformLocation(program, "uUseBvh"), uniforms.useBvh);
   gl.uniform1i(gl.getUniformLocation(program, "uUseGltfColor"), uniforms.useGltfColor);
   gl.uniform3fv(gl.getUniformLocation(program, "uBaseColor"), uniforms.baseColor);
   gl.uniform1f(gl.getUniformLocation(program, "uMetallic"), uniforms.metallic);
   gl.uniform1f(gl.getUniformLocation(program, "uRoughness"), uniforms.roughness);
-  const materialMode = uniforms.materialMode === "matte" || uniforms.materialMode === 1 ? 1 : 0;
+  let materialMode = 0;
+  if (uniforms.materialMode === "matte" || uniforms.materialMode === 1) {
+    materialMode = 1;
+  } else if (uniforms.materialMode === "surface-glass" || uniforms.materialMode === 2) {
+    materialMode = 2;
+  }
   gl.uniform1i(gl.getUniformLocation(program, "uMaterialMode"), materialMode);
   gl.uniform1f(gl.getUniformLocation(program, "uMatteSpecular"), uniforms.matteSpecular ?? 0.03);
   gl.uniform1f(gl.getUniformLocation(program, "uMatteRoughness"), uniforms.matteRoughness ?? 0.5);
   gl.uniform1f(gl.getUniformLocation(program, "uMatteDiffuseRoughness"), uniforms.matteDiffuseRoughness ?? 0.5);
   gl.uniform1f(gl.getUniformLocation(program, "uWrapDiffuse"), uniforms.wrapDiffuse ?? 0.2);
+  gl.uniform1f(gl.getUniformLocation(program, "uSurfaceIor"), uniforms.surfaceIor ?? 1.33);
+  gl.uniform1f(gl.getUniformLocation(program, "uSurfaceTransmission"), uniforms.surfaceTransmission ?? 0.35);
+  gl.uniform1f(gl.getUniformLocation(program, "uSurfaceOpacity"), uniforms.surfaceOpacity ?? 0.0);
+  gl.uniform1i(gl.getUniformLocation(program, "uSurfaceFlagMode"), uniforms.surfaceFlagMode ?? 0);
   gl.uniform1f(gl.getUniformLocation(program, "uRimBoost"), uniforms.rimBoost ?? 0.0);
+  gl.uniform1i(gl.getUniformLocation(program, "uClipEnabled"), uniforms.clipEnabled ?? 0);
+  gl.uniform3fv(gl.getUniformLocation(program, "uClipNormal"), uniforms.clipNormal ?? [0, 0, 1]);
+  gl.uniform1f(gl.getUniformLocation(program, "uClipOffset"), uniforms.clipOffset ?? 0.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uClipSide"), uniforms.clipSide ?? 1.0);
   gl.uniform1i(gl.getUniformLocation(program, "uMaxBounces"), uniforms.maxBounces);
   gl.uniform1f(gl.getUniformLocation(program, "uExposure"), uniforms.exposure);
   gl.uniform1f(gl.getUniformLocation(program, "uAmbientIntensity"), uniforms.ambientIntensity);

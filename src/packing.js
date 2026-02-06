@@ -137,6 +137,22 @@ export function packTriColors(triColors, maxTextureSize) {
   };
 }
 
+export function packTriFlags(triFlags, maxTextureSize) {
+  const triCount = Math.max(1, triFlags.length);
+  const texelCount = triCount;
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+  for (let i = 0; i < triFlags.length; i += 1) {
+    writeTexel(data, i, [triFlags[i], 0, 0, 0]);
+  }
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    texelsPerTri: 1
+  };
+}
+
 export function packPrimIndices(primIndexBuffer, maxTextureSize) {
   const texelCount = Math.max(1, primIndexBuffer.length);
   const layout = computeTextureLayout(texelCount, maxTextureSize);
