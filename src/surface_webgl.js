@@ -10,7 +10,7 @@
  * which is the main bottleneck (O(atoms * grid_volume)).
  */
 
-// Marching cubes tables (same as in surface.js)
+// Marching cubes lookup tables.
 const EDGE_TABLE = new Uint16Array([
   0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
   0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
@@ -1091,16 +1091,25 @@ export function computeSESWebGL(atoms, options = {}) {
 }
 
 /**
- * Check if WebGL surface computation is available.
+ * Convert SES mesh to triangles for the raytracer.
+ * @param {Object} mesh - The SES mesh from computeSESWebGL
+ * @param {Array} color - RGB color [r, g, b]
+ * @returns {{positions: Float32Array, indices: Uint32Array, normals: Float32Array, triColors: Float32Array}}
  */
-export function webglSurfaceAvailable() {
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl2');
-    if (!gl) return false;
-    const floatExt = gl.getExtension('EXT_color_buffer_float');
-    return !!floatExt;
-  } catch {
-    return false;
+export function sesToTriangles(mesh, color = [0.8, 0.8, 0.9]) {
+  const triCount = mesh.indices.length / 3;
+  const triColors = new Float32Array(triCount * 3);
+
+  for (let i = 0; i < triCount; i++) {
+    triColors[i * 3] = color[0];
+    triColors[i * 3 + 1] = color[1];
+    triColors[i * 3 + 2] = color[2];
   }
+
+  return {
+    positions: mesh.vertices,
+    indices: mesh.indices,
+    normals: mesh.normals,
+    triColors
+  };
 }

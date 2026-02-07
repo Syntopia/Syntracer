@@ -4,7 +4,7 @@ This project is a WebGL2 path tracer focused on molecular scenes (PDB/SDF/MOL), 
 
 ## Features
 - Molecular import: PDB / SDF / MOL
-- Cartoon / atom / SES surface rendering paths
+- Cartoon / atom / SES surface rendering (WebGPU-only SES path)
 - Analytic sky environment + HDR environment maps
 - Directional and ambient lighting controls
 - Depth-of-field controls and focus picking
@@ -17,13 +17,6 @@ mamba run -n wave uvicorn server:app --reload
 ```
 
 Then open `http://localhost:8000`.
-
-## Optional: WebAssembly SES surface
-Build the WASM module:
-
-```bash
-npm run build:wasm
-```
 
 ## Assets
 HDR environment maps can be downloaded with:

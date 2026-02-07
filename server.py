@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parent
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("application/json", ".json")
 mimetypes.add_type("image/vnd.radiance", ".hdr")
-mimetypes.add_type("application/wasm", ".wasm")
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 

@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:wasm": "bash scripts/build_ses_wasm.sh",
     "test": "node --test"
   }
 }

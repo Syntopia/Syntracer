@@ -7,27 +7,20 @@ import {
   packBvhNodes, packTriangles, packTriNormals, packTriColors, packTriFlags, packPrimIndices,
   packSpheres, packSphereColors, packCylinders, packCylinderColors
 } from "./packing.js";
-import { loadHDR, buildEnvSamplingData } from "./hdr.js";
+import { createEnvironmentController } from "./environment_controller.js";
+import { createUiController } from "./ui_controller.js";
+import { createInputController } from "./input_controller.js";
+import { hasSurfaceFlags, mergeTriangleMeshes } from "./scene_controller.js";
+import { formatPolyCount, cameraRelativeLightDir } from "./renderer_controller.js";
 import {
-  ANALYTIC_SKY_ID,
-  analyticSkyCacheKey,
-  generateAnalyticSkyEnvironment,
-  normalizeAnalyticSkySettings
-} from "./analytic_sky.js";
-import {
-  parsePDB,
-  parseSDF,
   parseAutoDetect,
   moleculeToGeometry,
   splitMolDataByHetatm,
   fetchPDB,
-  getBuiltinMolecule,
-  BUILTIN_MOLECULES
+  getBuiltinMolecule
 } from "./molecular.js";
 import { buildBackboneCartoon, buildSheetHbondCylinders } from "./cartoon.js";
-import { computeSES, sesToTriangles } from "./surface.js";
-import { computeSESWasm, initSurfaceWasm, surfaceWasmReady } from "./surface_wasm.js";
-import { computeSESWebGL, webglSurfaceAvailable } from "./surface_webgl.js";
+import { computeSESWebGL, sesToTriangles } from "./surface_webgl.js";
 import { buildNitrogenDensityVolume } from "./volume.js";
 import {
   initWebGL,
@@ -73,7 +66,7 @@ const loadPdbIdBtn = document.getElementById("loadPdbId");
 const pdbDisplayStyle = document.getElementById("pdbDisplayStyle");
 const pdbAtomScale = document.getElementById("pdbAtomScale");
 const pdbBondRadius = document.getElementById("pdbBondRadius");
-const surfaceModeSelect = document.getElementById("surfaceMode");
+const surfaceEnableToggle = document.getElementById("surfaceEnable");
 const probeRadiusInput = document.getElementById("probeRadius");
 const surfaceResolutionInput = document.getElementById("surfaceResolution");
 const smoothNormalsToggle = document.getElementById("smoothNormals");
@@ -142,14 +135,6 @@ let isLoading = false;
 let loggedFirstFrame = false;
 let glInitFailed = false;
 let lastMolContext = null;
-
-function hasSurfaceFlags(triFlags) {
-  if (!triFlags || triFlags.length === 0) return false;
-  for (let i = 0; i < triFlags.length; i += 1) {
-    if (triFlags[i] > 0.5) return true;
-  }
-  return false;
-}
 
 const cameraState = {
   target: [0, 0, 0],
@@ -612,41 +597,6 @@ async function loadMolecularFile(text, filename) {
   await loadMolecularGeometry(spheres, cylinders, molData, options, volumeData, surfaceAtomMode);
 }
 
-function mergeTriangleMeshes(a, b) {
-  if (!a || a.positions.length === 0) return b;
-  if (!b || b.positions.length === 0) return a;
-
-  const aTriCount = a.indices.length / 3;
-  const bTriCount = b.indices.length / 3;
-
-  const positions = new Float32Array(a.positions.length + b.positions.length);
-  positions.set(a.positions, 0);
-  positions.set(b.positions, a.positions.length);
-
-  const normals = new Float32Array(a.normals.length + b.normals.length);
-  normals.set(a.normals, 0);
-  normals.set(b.normals, a.normals.length);
-
-  const indices = new Uint32Array(a.indices.length + b.indices.length);
-  indices.set(a.indices, 0);
-  const offset = a.positions.length / 3;
-  for (let i = 0; i < b.indices.length; i += 1) {
-    indices[a.indices.length + i] = b.indices[i] + offset;
-  }
-
-  const triColors = new Float32Array(a.triColors.length + b.triColors.length);
-  triColors.set(a.triColors, 0);
-  triColors.set(b.triColors, a.triColors.length);
-
-  const aFlags = a.triFlags && a.triFlags.length === aTriCount ? a.triFlags : new Float32Array(aTriCount);
-  const bFlags = b.triFlags && b.triFlags.length === bTriCount ? b.triFlags : new Float32Array(bTriCount);
-  const triFlags = new Float32Array(aFlags.length + bFlags.length);
-  triFlags.set(aFlags, 0);
-  triFlags.set(bFlags, aFlags.length);
-
-  return { positions, indices, normals, triColors, triFlags };
-}
-
 /**
  * Load molecular geometry from spheres and cylinders.
  */
@@ -658,8 +608,7 @@ async function loadMolecularGeometry(
   volumeData = null,
   surfaceAtomMode = "hetero"
 ) {
-  const surfaceMode = surfaceModeSelect?.value || "none";
-  const showSurface = surfaceMode !== "none";
+  const showSurface = surfaceEnableToggle?.checked || false;
   const displayOptions = options ?? getMolecularDisplayOptions();
   const displayStyle = displayOptions.displayStyle || "ball-and-stick";
   const heteroDisplayOptions = displayStyle === "cartoon"
@@ -722,10 +671,8 @@ async function loadMolecularGeometry(
       const resolution = parseFloat(surfaceResolutionInput?.value) || 0.25;
       const smoothNormals = smoothNormalsToggle?.checked || false;
 
-      const backendLabels = { js: "JS", wasm: "WASM", webgl: "WebGL" };
-      const backendLabel = backendLabels[surfaceMode] || surfaceMode;
       logger.info(
-        `Computing SES surface (${backendLabel}, probe=${probeRadius}Å, resolution=${resolution}Å, smoothNormals=${smoothNormals})...`
+        `Computing SES surface (WebGPU, probe=${probeRadius}Å, resolution=${resolution}Å, smoothNormals=${smoothNormals})...`
       );
       const surfaceStart = performance.now();
 
@@ -742,26 +689,14 @@ async function loadMolecularGeometry(
 
       let sesMesh = null;
       try {
-        if (surfaceMode === "wasm") {
-          if (!surfaceWasmReady()) {
-            logger.info("Initializing SES WASM module...");
-          }
-          sesMesh = await computeSESWasm(atoms, { probeRadius, resolution, smoothNormals });
-        } else if (surfaceMode === "webgl") {
-          if (!webglSurfaceAvailable()) {
-            throw new Error("WebGL surface computation not available (requires WebGL2 + EXT_color_buffer_float)");
-          }
-          sesMesh = computeSESWebGL(atoms, { probeRadius, resolution, smoothNormals });
-        } else {
-          sesMesh = computeSES(atoms, { probeRadius, resolution, smoothNormals });
-        }
+        sesMesh = computeSESWebGL(atoms, { probeRadius, resolution, smoothNormals });
       } catch (err) {
         logger.error(err.message || String(err));
         throw err;
       }
       const surfaceTime = performance.now() - surfaceStart;
       logger.info(
-        `SES ${backendLabel} completed in ${surfaceTime.toFixed(0)}ms: ${sesMesh.indices.length / 3} triangles`
+        `SES WebGPU completed in ${surfaceTime.toFixed(0)}ms: ${sesMesh.indices.length / 3} triangles`
       );
 
       if (sesMesh.vertices.length > 0) {
@@ -979,12 +914,39 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function formatPolyCount(count) {
-  if (!Number.isFinite(count)) return "0";
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
-  return String(count);
-}
+const uiController = createUiController({
+  tabButtons,
+  tabPanels,
+  materialSelect,
+  dofEnableToggle,
+  maxFramesInput,
+  clipDistanceInput,
+  renderState,
+  clamp,
+  getSceneData: () => sceneData
+});
+
+const {
+  setActiveTab,
+  updateMaterialVisibility,
+  updateDofVisibility,
+  setSliderValue,
+  updateRenderLimits,
+  updateClipRange
+} = uiController;
+
+const inputController = createInputController({
+  canvas,
+  pointerState,
+  clamp
+});
+
+const {
+  isTextEntryTarget,
+  updatePointerFromMouseEvent,
+  normalizeVec3,
+  buildCameraRayFromCanvasPixel
+} = inputController;
 
 function setLoadingOverlay(visible, message = "Loading...") {
   if (!loadingOverlay) return;
@@ -1036,15 +998,6 @@ function resetAccumulation(reason) {
   if (reason) {
     logger.info(reason);
   }
-}
-
-function setActiveTab(name) {
-  tabButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.tabButton === name);
-  });
-  tabPanels.forEach((panel) => {
-    panel.classList.toggle("active", panel.dataset.tabPanel === name);
-  });
 }
 
 function updateMaterialState() {
@@ -1132,35 +1085,6 @@ function updateVolumeState() {
   resetAccumulation("Volume settings updated.");
 }
 
-function updateMaterialVisibility() {
-  const mode = materialSelect?.value || "metallic";
-  const metallicGroup = document.querySelector(".material-metallic");
-  const matteGroup = document.querySelector(".material-matte");
-  const surfaceGroup = document.querySelector(".material-surface");
-  if (metallicGroup) metallicGroup.style.display = mode === "metallic" ? "block" : "none";
-  if (matteGroup) matteGroup.style.display = mode === "matte" ? "block" : "none";
-  if (surfaceGroup) {
-    surfaceGroup.style.display = (mode === "surface-glass" || mode === "translucent-plastic") ? "block" : "none";
-  }
-}
-
-function updateDofVisibility() {
-  const controls = document.querySelector(".dof-controls");
-  if (!controls) return;
-  controls.style.display = dofEnableToggle?.checked ? "block" : "none";
-}
-
-function setSliderValue(input, value) {
-  if (!input) return;
-  input.value = String(value);
-  const valueInput = document.querySelector(`.value-input[data-for="${input.id}"]`);
-  if (valueInput) {
-    const step = parseFloat(input.step) || 1;
-    const decimals = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0;
-    valueInput.value = Number(value).toFixed(decimals);
-  }
-}
-
 function applyMaterialPreset(mode) {
   if (mode !== "translucent-plastic") return;
   // Dielectric translucent plastic defaults.
@@ -1175,8 +1099,7 @@ function applyMaterialPreset(mode) {
 
 async function refreshSurfaceAtomMode() {
   if (!lastMolContext || !lastMolContext.molData) return;
-  const surfaceMode = surfaceModeSelect?.value || "none";
-  if (surfaceMode === "none") return;
+  if (!surfaceEnableToggle?.checked) return;
   const usesSurfaceTranslucency = (
     renderState.materialMode === "surface-glass" || renderState.materialMode === "translucent-plastic"
   );
@@ -1192,23 +1115,6 @@ async function refreshSurfaceAtomMode() {
     lastMolContext.volumeData,
     desiredMode
   );
-}
-
-function updateRenderLimits() {
-  const raw = Number(maxFramesInput?.value);
-  const maxFrames = clamp(Number.isFinite(raw) ? Math.floor(raw) : 0, 0, 2000);
-  renderState.maxFrames = maxFrames;
-}
-
-function updateClipRange() {
-  if (!clipDistanceInput || !sceneData) return;
-  const max = Math.max(1, sceneData.sceneScale * 4);
-  clipDistanceInput.max = max.toFixed(2);
-  const current = Number(clipDistanceInput.value) || 0;
-  if (current > max) {
-    clipDistanceInput.value = max.toFixed(2);
-    clipDistanceInput.dispatchEvent(new Event("input", { bubbles: true }));
-  }
 }
 
 function updateClipState({ preserveLock = false } = {}) {
@@ -1241,162 +1147,37 @@ function updateClipState({ preserveLock = false } = {}) {
   resetAccumulation("Slice plane updated.");
 }
 
-function parseAnalyticResolution(value) {
-  if (!value || typeof value !== "string") {
-    throw new Error("Analytic sky resolution is missing.");
-  }
-  const parts = value.toLowerCase().split("x").map((v) => Number(v));
-  if (parts.length !== 2 || !Number.isInteger(parts[0]) || !Number.isInteger(parts[1])) {
-    throw new Error(`Invalid analytic sky resolution: ${value}`);
-  }
-  return { width: parts[0], height: parts[1] };
-}
+const environmentController = createEnvironmentController({
+  envSelect,
+  envIntensityInput,
+  envMaxLumInput,
+  analyticSkyResolutionSelect,
+  analyticSkyTurbidityInput,
+  analyticSkySunAzimuthInput,
+  analyticSkySunElevationInput,
+  analyticSkyIntensityInput,
+  analyticSkySunIntensityInput,
+  analyticSkySunRadiusInput,
+  analyticSkyGroundAlbedoInput,
+  analyticSkyHorizonSoftnessInput,
+  renderState,
+  envCache,
+  logger,
+  clamp,
+  requireNumberInput,
+  setLoadingOverlay,
+  resetAccumulation,
+  createEnvTexture,
+  createCdfTexture,
+  getGlState: () => glState
+});
 
-function getAnalyticSkySettingsFromUi() {
-  const { width, height } = parseAnalyticResolution(analyticSkyResolutionSelect?.value || "");
-  return normalizeAnalyticSkySettings({
-    width,
-    height,
-    turbidity: requireNumberInput(analyticSkyTurbidityInput, "Analytic sky turbidity"),
-    sunAzimuthDeg: requireNumberInput(analyticSkySunAzimuthInput, "Analytic sky sun azimuth"),
-    sunElevationDeg: requireNumberInput(analyticSkySunElevationInput, "Analytic sky sun elevation"),
-    skyIntensity: requireNumberInput(analyticSkyIntensityInput, "Analytic sky intensity"),
-    sunIntensity: requireNumberInput(analyticSkySunIntensityInput, "Analytic sky sun intensity"),
-    sunAngularRadiusDeg: requireNumberInput(analyticSkySunRadiusInput, "Analytic sky sun radius"),
-    groundAlbedo: requireNumberInput(analyticSkyGroundAlbedoInput, "Analytic sky ground albedo"),
-    horizonSoftness: requireNumberInput(analyticSkyHorizonSoftnessInput, "Analytic sky horizon softness")
-  });
-}
-
-function updateEnvironmentVisibility() {
-  const analyticControls = document.querySelector(".analytic-sky-controls");
-  if (!analyticControls) return;
-  const selected = envSelect?.value || "";
-  analyticControls.style.display = selected === ANALYTIC_SKY_ID ? "block" : "none";
-}
-
-function uploadEnvironmentToGl(env) {
-  if (!glState || !env) return;
-  const gl = glState.gl;
-  if (glState.envTex && glState.envTex !== glState.blackEnvTex) {
-    gl.deleteTexture(glState.envTex);
-  }
-  if (glState.envMarginalCdfTex && glState.envMarginalCdfTex !== glState.dummyCdfTex) {
-    gl.deleteTexture(glState.envMarginalCdfTex);
-  }
-  if (
-    glState.envConditionalCdfTex
-    && glState.envConditionalCdfTex !== glState.dummyCdfTex
-    && glState.envConditionalCdfTex !== glState.envMarginalCdfTex
-  ) {
-    gl.deleteTexture(glState.envConditionalCdfTex);
-  }
-
-  glState.envTex = createEnvTexture(gl, env.width, env.height, env.data);
-  glState.envMarginalCdfTex = createCdfTexture(
-    gl,
-    env.samplingData.marginalCdf,
-    env.samplingData.height + 1,
-    1
-  );
-  glState.envConditionalCdfTex = createCdfTexture(
-    gl,
-    env.samplingData.conditionalCdf,
-    env.samplingData.width + 1,
-    env.samplingData.height
-  );
-  glState.envSize = [env.width, env.height];
-  glState.envUrl = renderState.envUrl;
-  glState.envCacheKey = env.version || renderState.envCacheKey;
-}
-
-async function loadEnvironment(url, analyticSettings = null) {
-  if (!url) {
-    renderState.envUrl = null;
-    renderState.envCacheKey = null;
-    renderState.envData = null;
-    if (glState) {
-      const gl = glState.gl;
-      if (glState.envTex && glState.envTex !== glState.blackEnvTex) {
-        gl.deleteTexture(glState.envTex);
-      }
-      if (glState.envMarginalCdfTex && glState.envMarginalCdfTex !== glState.dummyCdfTex) {
-        gl.deleteTexture(glState.envMarginalCdfTex);
-      }
-      if (glState.envConditionalCdfTex && glState.envConditionalCdfTex !== glState.dummyCdfTex) {
-        gl.deleteTexture(glState.envConditionalCdfTex);
-      }
-      glState.envTex = glState.blackEnvTex;
-      glState.envMarginalCdfTex = glState.dummyCdfTex;
-      glState.envConditionalCdfTex = glState.dummyCdfTex;
-      glState.envSize = [1, 1];
-      glState.envUrl = null;
-      glState.envCacheKey = null;
-    }
-    return;
-  }
-
-  let env = null;
-  if (url === ANALYTIC_SKY_ID) {
-    if (!analyticSettings) {
-      throw new Error("Analytic sky settings are required.");
-    }
-    const settings = normalizeAnalyticSkySettings(analyticSettings);
-    const key = `${ANALYTIC_SKY_ID}:${analyticSkyCacheKey(settings)}`;
-    if (envCache.has(key)) {
-      env = envCache.get(key);
-    } else {
-      logger.info("Generating analytic sky (Preetham/Perez) with WebGPU...");
-      env = await generateAnalyticSkyEnvironment(settings, logger);
-      env.samplingData = buildEnvSamplingData(env.data, env.width, env.height);
-      env.version = key;
-      envCache.set(key, env);
-    }
-  } else if (envCache.has(url)) {
-    env = envCache.get(url);
-  } else {
-    logger.info(`Loading environment: ${url}`);
-    env = await loadHDR(url, logger);
-    env.samplingData = buildEnvSamplingData(env.data, env.width, env.height);
-    env.version = url;
-    envCache.set(url, env);
-  }
-
-  renderState.envData = env;
-  renderState.envUrl = url;
-  renderState.envCacheKey = env.version || url;
-
-  if (glState && renderState.envData) {
-    uploadEnvironmentToGl(renderState.envData);
-  }
-}
-
-async function updateEnvironmentState() {
-  setLoadingOverlay(true, "Loading environment...");
-  renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 1.0);
-  renderState.envMaxLuminance = clamp(Number(envMaxLumInput?.value ?? 50), 0, 500);
-  const url = envSelect.value || null;
-  let envChanged = false;
-
-  try {
-    if (url === ANALYTIC_SKY_ID) {
-      const analyticSettings = getAnalyticSkySettingsFromUi();
-      const analyticKey = `${ANALYTIC_SKY_ID}:${analyticSkyCacheKey(analyticSettings)}`;
-      if (url !== renderState.envUrl || analyticKey !== renderState.envCacheKey) {
-        await loadEnvironment(url, analyticSettings);
-        envChanged = true;
-      }
-    } else if (url !== renderState.envUrl) {
-      await loadEnvironment(url);
-      envChanged = true;
-    }
-    resetAccumulation(envChanged ? "Environment updated." : "Environment intensity updated.");
-  } catch (err) {
-    logger.error(err.message || String(err));
-  }
-
-  setLoadingOverlay(false);
-}
+const {
+  updateEnvironmentVisibility,
+  uploadEnvironmentToGl,
+  updateEnvironmentState,
+  loadEnvManifest
+} = environmentController;
 
 function updateLightState() {
   renderState.lights[0] = {
@@ -1416,20 +1197,6 @@ function updateLightState() {
     color: hexToRgb(light2Color.value)
   };
   resetAccumulation("Lighting updated.");
-}
-
-function cameraRelativeLightDir(azimuthDeg, elevationDeg, forward, right, up) {
-  const az = (azimuthDeg * Math.PI) / 180;
-  const el = (elevationDeg * Math.PI) / 180;
-  const cosEl = Math.cos(el);
-  const sinEl = Math.sin(el);
-  const sinAz = Math.sin(az);
-  const cosAz = Math.cos(az);
-  const lx = right[0] * cosEl * sinAz + up[0] * sinEl + forward[0] * cosEl * cosAz;
-  const ly = right[1] * cosEl * sinAz + up[1] * sinEl + forward[1] * cosEl * cosAz;
-  const lz = right[2] * cosEl * sinAz + up[2] * sinEl + forward[2] * cosEl * cosAz;
-  const len = Math.hypot(lx, ly, lz) || 1;
-  return [lx / len, ly / len, lz / len];
 }
 
 function computeBounds(positions) {
@@ -1600,56 +1367,6 @@ function updateCameraFromInput(dt) {
 
 function applyOrbitDrag(dx, dy) {
   cameraState.rotation = applyOrbitDragToRotation(cameraState.rotation, dx, dy);
-}
-
-function isTextEntryTarget(target) {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-}
-
-function updatePointerFromMouseEvent(event) {
-  if (!canvas) {
-    throw new Error("Render canvas is missing.");
-  }
-  const rect = canvas.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) {
-    throw new Error("Canvas has invalid size for pointer tracking.");
-  }
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  pointerState.x = clamp(x, 0, rect.width);
-  pointerState.y = clamp(y, 0, rect.height);
-  pointerState.overCanvas = true;
-}
-
-function normalizeVec3(v) {
-  const len = Math.hypot(v[0], v[1], v[2]);
-  if (len < 1e-10) {
-    throw new Error("Cannot normalize zero-length vector.");
-  }
-  return [v[0] / len, v[1] / len, v[2] / len];
-}
-
-function buildCameraRayFromCanvasPixel(camera, canvasX, canvasY) {
-  if (!canvas) {
-    throw new Error("Render canvas is missing.");
-  }
-  const width = Math.max(1, Math.floor(canvas.clientWidth));
-  const height = Math.max(1, Math.floor(canvas.clientHeight));
-  if (width <= 0 || height <= 0) {
-    throw new Error("Canvas size is invalid for ray picking.");
-  }
-
-  const ndcX = (canvasX / width) * 2.0 - 1.0;
-  const ndcY = 1.0 - (canvasY / height) * 2.0;
-  const dir = [
-    camera.forward[0] + camera.right[0] * ndcX + camera.up[0] * ndcY,
-    camera.forward[1] + camera.right[1] * ndcX + camera.up[1] * ndcY,
-    camera.forward[2] + camera.right[2] * ndcX + camera.up[2] * ndcY
-  ];
-  return normalizeVec3(dir);
 }
 
 function tracePointerHit(camera) {
@@ -2474,24 +2191,16 @@ useImportedColorToggle.addEventListener("change", updateMaterialState);
 clipEnableToggle?.addEventListener("change", () => updateClipState({ preserveLock: true }));
 clipDistanceInput?.addEventListener("input", () => updateClipState({ preserveLock: true }));
 clipLockToggle?.addEventListener("change", () => updateClipState({ preserveLock: false }));
-surfaceModeSelect?.addEventListener("change", async () => {
-  const mode = surfaceModeSelect.value;
-  if (mode === "wasm") {
-    try {
-      logger.info("Loading SES WASM module...");
-      await initSurfaceWasm();
-      logger.info("SES WASM module ready.");
-    } catch (err) {
-      logger.error(err.message || String(err));
-    }
-  } else if (mode === "webgl") {
-    if (!webglSurfaceAvailable()) {
-      logger.warn("WebGL surface not available - requires WebGL2 + EXT_color_buffer_float");
-    } else {
-      logger.info("WebGL surface computation available.");
-    }
-  }
-  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
+surfaceEnableToggle?.addEventListener("change", () => {
+  if (!lastMolContext || !lastMolContext.molData) return;
+  loadMolecularGeometry(
+    lastMolContext.spheres,
+    lastMolContext.cylinders,
+    lastMolContext.molData,
+    lastMolContext.options,
+    lastMolContext.volumeData,
+    lastMolContext.surfaceAtomMode
+  ).catch((err) => logger.error(err.message || String(err)));
 });
 materialSelect?.addEventListener("change", () => {
   applyMaterialPreset(materialSelect.value);
@@ -2610,25 +2319,6 @@ visModeSelect?.addEventListener("change", () => {
   renderState.visMode = parseInt(visModeSelect.value, 10) || 0;
   resetAccumulation("Visualization mode changed.");
 });
-
-// Load HDR environment map manifest and populate dropdown
-async function loadEnvManifest() {
-  try {
-    const res = await fetch("assets/env/manifest.json");
-    if (!res.ok) return;
-    const manifest = await res.json();
-
-    // Add options for each HDR map
-    for (const entry of manifest) {
-      const option = document.createElement("option");
-      option.value = `assets/env/${entry.file}`;
-      option.textContent = entry.name;
-      envSelect.appendChild(option);
-    }
-  } catch (err) {
-    console.warn("Could not load HDR manifest:", err);
-  }
-}
 
 const params = new URLSearchParams(window.location.search);
 const autorun = params.get("autorun");

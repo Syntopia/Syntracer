@@ -605,13 +605,10 @@
 
               <div class="divider"></div>
 
-              <label for="surfaceMode">Molecular surface</label>
-              <select id="surfaceMode">
-                <option value="none">None (atoms only)</option>
-                <option value="js">SES - JavaScript</option>
-                <option value="wasm">SES - WebAssembly</option>
-                <option value="webgl">SES - WebGL (GPU)</option>
-              </select>
+              <div class="checkbox-group">
+                <input id="surfaceEnable" type="checkbox" />
+                <label for="surfaceEnable">Enable molecular surface (SES - WebGPU)</label>
+              </div>
 
               <div style="height: 12px"></div>
               <label for="probeRadius">Probe radius (Å)</label>
