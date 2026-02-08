@@ -1,4 +1,4 @@
-# WebGL2 Molecular Ray Tracer
+# Syntracer
 
 A real-time, progressive path tracer for molecular visualization running entirely in the browser. Built on WebGL2 with CPU-side SAH BVH construction and GPU fragment-shader traversal.
 
