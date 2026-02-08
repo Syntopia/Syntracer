@@ -130,6 +130,126 @@
         margin: 0 0 12px;
         color: var(--fg);
       }
+      .scene-graph-tree {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .scene-graph-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 0;
+      }
+      .scene-graph-group + .scene-graph-group {
+        margin-top: 2px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(148, 163, 184, 0.22);
+      }
+      .scene-graph-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        padding: 6px 8px;
+        min-height: 30px;
+        cursor: pointer;
+        position: relative;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      .scene-graph-row:hover {
+        background: rgba(148, 163, 184, 0.08);
+      }
+      .scene-graph-row.selected {
+        border-color: var(--accent);
+        background: rgba(96, 165, 250, 0.14);
+      }
+      .scene-graph-row input[type="checkbox"] {
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        accent-color: #60a5fa;
+      }
+      .scene-graph-toggle {
+        width: 16px;
+        height: 16px;
+        border: none;
+        background: transparent;
+        color: var(--fg-muted);
+        padding: 0;
+        font-size: 10px;
+        line-height: 1;
+        cursor: pointer;
+        border-radius: 3px;
+      }
+      .scene-graph-toggle:hover {
+        background: rgba(148, 163, 184, 0.18);
+        color: var(--fg);
+      }
+      .scene-graph-toggle-spacer {
+        width: 16px;
+        height: 16px;
+        display: inline-block;
+        flex-shrink: 0;
+      }
+      .scene-graph-children {
+        margin-left: 16px;
+        padding-left: 10px;
+        border-left: 1px solid rgba(148, 163, 184, 0.35);
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .scene-graph-row.rep::before {
+        content: "";
+        position: absolute;
+        left: -10px;
+        top: 50%;
+        width: 8px;
+        border-top: 1px solid rgba(148, 163, 184, 0.35);
+      }
+      .scene-graph-row.object .scene-graph-label-main {
+        font-weight: 600;
+      }
+      .scene-graph-row.rep .scene-graph-label-main {
+        font-weight: 500;
+      }
+      .scene-graph-label {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        user-select: none;
+      }
+      .scene-graph-label-main {
+        font-size: 12px;
+        color: var(--fg);
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .scene-graph-label-meta {
+        font-size: 11px;
+        color: var(--fg-muted);
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+      .representation-actions {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .representation-actions button {
+        flex: 1;
+      }
+      .selection-hint {
+        font-size: 11px;
+        color: var(--fg-muted);
+        margin-bottom: 10px;
+      }
       .collapsible > summary {
         list-style: none;
         cursor: pointer;
@@ -396,21 +516,6 @@
         background: var(--border);
       }
 
-      /* Status */
-      .status {
-        font-size: 11px;
-        color: var(--fg-muted);
-        white-space: pre-wrap;
-        min-height: 40px;
-        max-height: 140px;
-        overflow-y: auto;
-        background: var(--input-bg);
-        border-radius: var(--radius-sm);
-        padding: 8px 10px;
-        font-family: "SF Mono", Monaco, monospace;
-        line-height: 1.4;
-      }
-
       /* Divider */
       .divider {
         height: 1px;
@@ -470,6 +575,21 @@
         display: none;
         z-index: 5;
       }
+      .hover-info-overlay {
+        position: absolute;
+        left: 24px;
+        bottom: 24px;
+        padding: 6px 10px;
+        border-radius: var(--radius-sm);
+        background: rgba(0, 0, 0, 0.55);
+        color: #e5e7eb;
+        font-size: 12px;
+        font-family: "SF Mono", Monaco, monospace;
+        pointer-events: none;
+        display: none;
+        white-space: nowrap;
+        z-index: 6;
+      }
 
       /* Inline flex row */
       .flex-row {
@@ -516,10 +636,15 @@
         </div>
 
         <div class="sidebar-content">
+          <div class="form-section">
+            <div class="form-section-title">Scene Graph</div>
+            <div id="sceneGraphTree" class="scene-graph-tree"></div>
+          </div>
+
           <div class="tabs" role="tablist">
             <button class="tab-button active" data-tab-button="scene" type="button">Import</button>
             <button class="tab-button" data-tab-button="render" type="button">Render</button>
-            <button class="tab-button" data-tab-button="material" type="button">Material</button>
+            <button class="tab-button" data-tab-button="representation" type="button">Representation</button>
           </div>
 
           <!-- SCENE TAB -->
@@ -571,81 +696,7 @@
             </div>
 
             <div class="form-section">
-              <div class="form-section-title">Molecular Display</div>
-
-              <label for="pdbDisplayStyle">Display style</label>
-              <select id="pdbDisplayStyle">
-                <option value="ball-and-stick" selected>Ball and Stick</option>
-                <option value="vdw">Van der Waals (Space-filling)</option>
-                <option value="stick">Stick only</option>
-                <option value="cartoon">Cartoon (Backbone)</option>
-              </select>
-
-              <div style="height: 12px"></div>
-              <label for="pdbAtomScale">Atom radius scale</label>
-              <div class="slider-input">
-                <input id="pdbAtomScale" type="range" min="0.1" max="1.5" step="0.05" value="1.0" />
-                <input type="text" class="value-input" data-for="pdbAtomScale" value="1.00" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="pdbAtomScale">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="pdbAtomScale">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="pdbBondRadius">Bond radius</label>
-              <div class="slider-input">
-                <input id="pdbBondRadius" type="range" min="0.05" max="0.3" step="0.01" value="0.12" />
-                <input type="text" class="value-input" data-for="pdbBondRadius" value="0.12" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="pdbBondRadius">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="pdbBondRadius">◀</button>
-                </div>
-              </div>
-
-              <div class="divider"></div>
-
-              <div class="checkbox-group">
-                <input id="surfaceEnable" type="checkbox" />
-                <label for="surfaceEnable">Enable molecular surface (SES - WebGPU)</label>
-              </div>
-
-              <div style="height: 12px"></div>
-              <label for="probeRadius">Probe radius (Å)</label>
-              <div class="slider-input">
-                <input id="probeRadius" type="range" min="0.5" max="3.0" step="0.1" value="1.4" />
-                <input type="text" class="value-input" data-for="probeRadius" value="1.4" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="probeRadius">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="probeRadius">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="surfaceResolution">Surface resolution (Å)</label>
-              <div class="slider-input">
-                <input id="surfaceResolution" type="range" min="0.1" max="1.5" step="0.05" value="0.25" />
-                <input type="text" class="value-input" data-for="surfaceResolution" value="0.25" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="surfaceResolution">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="surfaceResolution">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <div class="checkbox-group">
-                <input id="smoothNormals" type="checkbox" />
-                <label for="smoothNormals">Smooth surface normals</label>
-              </div>
-
-              <div style="height: 8px"></div>
-              <div class="checkbox-group">
-                <input id="showSheetHbonds" type="checkbox" />
-                <label for="showSheetHbonds">Debug: show sheet H-bonds</label>
-              </div>
-
-              <div class="divider"></div>
-
+              <div class="form-section-title">Import Options</div>
               <div style="font-size: 11px; color: var(--fg-muted); margin-bottom: 8px;">
                 Volume (applied on PDB import)
               </div>
@@ -675,11 +726,6 @@
                 </div>
               </div>
 
-            </div>
-
-            <div class="form-section">
-              <div class="form-section-title">Status</div>
-              <div class="status" id="status">Ready</div>
             </div>
           </div>
 
@@ -1176,15 +1222,87 @@
             </div>
           </div>
 
-          <!-- MATERIAL TAB -->
-          <div class="tab-panel" data-tab-panel="material">
+          <!-- REPRESENTATION TAB -->
+          <div class="tab-panel" data-tab-panel="representation">
+            <div class="form-section">
+              <div class="form-section-title">Representation</div>
+              <div id="representationSelectionHint" class="selection-hint">Select an object or representation in Scene Graph.</div>
+              <div class="representation-actions">
+                <button id="representationActionBtn" type="button">Add representation</button>
+              </div>
+
+              <div style="height: 10px"></div>
+              <label for="pdbDisplayStyle">Molecular display</label>
+              <select id="pdbDisplayStyle">
+                <option value="ball-and-stick" selected>Ball and Stick</option>
+                <option value="vdw">Van der Waals (Space-filling)</option>
+                <option value="stick">Stick only</option>
+                <option value="cartoon">Cartoon (Backbone)</option>
+                <option value="ses">Solvent-Excluded Surface (SES)</option>
+              </select>
+
+              <div class="display-atom-controls">
+                <div style="height: 10px"></div>
+                <label for="pdbAtomScale">Atom radius scale</label>
+                <div class="slider-input">
+                  <input id="pdbAtomScale" type="range" min="0.1" max="1.5" step="0.05" value="1.0" />
+                  <input type="text" class="value-input" data-for="pdbAtomScale" value="1.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="pdbAtomScale">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="pdbAtomScale">◀</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="display-bond-controls">
+                <div style="height: 8px"></div>
+                <label for="pdbBondRadius">Bond radius</label>
+                <div class="slider-input">
+                  <input id="pdbBondRadius" type="range" min="0.05" max="0.3" step="0.01" value="0.12" />
+                  <input type="text" class="value-input" data-for="pdbBondRadius" value="0.12" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="pdbBondRadius">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="pdbBondRadius">◀</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="display-cartoon-controls">
+                <div style="height: 8px"></div>
+                <div class="checkbox-group">
+                  <input id="showSheetHbonds" type="checkbox" />
+                  <label for="showSheetHbonds">Debug: show sheet H-bonds</label>
+                </div>
+              </div>
+
+              <div class="display-ses-controls">
+                <div style="height: 8px"></div>
+                <label for="probeRadius">Probe radius (Å)</label>
+                <div class="slider-input">
+                  <input id="probeRadius" type="range" min="0.5" max="3.0" step="0.1" value="1.4" />
+                  <input type="text" class="value-input" data-for="probeRadius" value="1.4" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="probeRadius">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="probeRadius">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="surfaceResolution">Surface resolution (Å)</label>
+                <div class="slider-input">
+                  <input id="surfaceResolution" type="range" min="0.1" max="1.5" step="0.05" value="0.25" />
+                  <input type="text" class="value-input" data-for="surfaceResolution" value="0.25" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="surfaceResolution">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="surfaceResolution">◀</button>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
             <div class="form-section">
               <div class="form-section-title">Material Properties</div>
-
-              <div class="checkbox-group">
-                <input id="useImportedColor" type="checkbox" checked />
-                <label for="useImportedColor">Use imported colors</label>
-              </div>
 
               <label for="materialSelect">Material</label>
               <select id="materialSelect">
@@ -1193,9 +1311,6 @@
                 <option value="surface-glass">Surface Glass</option>
                 <option value="translucent-plastic">Translucent Plastic</option>
               </select>
-
-              <label for="baseColor">Base color (override)</label>
-              <input id="baseColor" type="color" value="#cccccc" />
 
               <div class="material-metallic">
                 <div style="height: 12px"></div>
@@ -1280,16 +1395,10 @@
 
               <div class="material-surface">
                 <div style="height: 12px"></div>
-                <div class="checkbox-group">
-                  <input id="surfaceShowAtoms" type="checkbox" checked />
-                  <label for="surfaceShowAtoms">Show interior atoms/bonds</label>
-                </div>
-
-                <div style="height: 8px"></div>
                 <label for="surfaceIor">Surface IOR</label>
                 <div class="slider-input">
-                  <input id="surfaceIor" type="range" min="1.0" max="2.5" step="0.01" value="1.33" />
-                  <input type="text" class="value-input" data-for="surfaceIor" value="1.33" />
+                  <input id="surfaceIor" type="range" min="1.0" max="2.5" step="0.01" value="1.00" />
+                  <input type="text" class="value-input" data-for="surfaceIor" value="1.00" />
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="surfaceIor">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="surfaceIor">◀</button>
@@ -1326,6 +1435,7 @@
       <main class="canvas-container">
         <canvas id="view"></canvas>
         <div class="hover-box-overlay" id="hoverBoxOverlay"></div>
+        <div class="hover-info-overlay" id="hoverInfoOverlay"></div>
         <div class="render-overlay" id="renderOverlay"></div>
         <div class="loading-overlay" id="loadingOverlay">Loading...</div>
       </main>

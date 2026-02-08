@@ -2,25 +2,37 @@ import { createLogger } from "./logger.js";
 import { applyOrbitDragToRotation, resolveRotationLock } from "./camera_orbit.js";
 import { primTypeLabel, traceSceneRay } from "./ray_pick.js";
 import { computePrimitiveWorldBounds, projectAabbToCanvasRect } from "./overlay_bbox.js";
-import { buildUnifiedBVH, flattenBVH } from "./bvh.js";
+import { buildUnifiedBVH, flattenBVH, PRIM_TRIANGLE, PRIM_SPHERE, PRIM_CYLINDER } from "./bvh.js";
 import {
-  packBvhNodes, packTriangles, packTriNormals, packTriColors, packTriFlags, packPrimIndices,
-  packSpheres, packSphereColors, packCylinders, packCylinderColors
+  packBvhNodes, packTriangles, packTriNormals, packTriFlags, packPrimIndices,
+  packSpheres, packSphereColorsWithMaterialIndices, packTriColorsWithMaterialIndices,
+  packCylinders, packCylinderColorsWithMaterialIndices, packMaterialTable
 } from "./packing.js";
 import { createEnvironmentController } from "./environment_controller.js";
 import { createUiController } from "./ui_controller.js";
 import { createInputController } from "./input_controller.js";
-import { hasSurfaceFlags, mergeTriangleMeshes } from "./scene_controller.js";
+import { hasSurfaceFlags } from "./scene_controller.js";
 import { formatPolyCount, cameraRelativeLightDir } from "./renderer_controller.js";
 import {
   parseAutoDetect,
-  moleculeToGeometry,
-  splitMolDataByHetatm,
   fetchPDB,
   getBuiltinMolecule
 } from "./molecular.js";
-import { buildBackboneCartoon, buildSheetHbondCylinders } from "./cartoon.js";
-import { computeSESWebGL, sesToTriangles } from "./surface_webgl.js";
+import {
+  createSceneGraphFromMolData,
+  addRepresentationToObject,
+  updateRepresentation,
+  selectObject,
+  selectRepresentation,
+  toggleObjectVisibility,
+  toggleRepresentationVisibility,
+  listVisibleRepresentations,
+  findRepresentation,
+  findObject,
+  cloneMaterial,
+  cloneDisplay
+} from "./scene_graph.js";
+import { compileSceneGraphGeometry, findPrimitivePickRange } from "./scene_graph_compile.js";
 import { buildNitrogenDensityVolume } from "./volume.js";
 import {
   initWebGL,
@@ -43,6 +55,7 @@ const canvasContainer = canvas?.closest(".canvas-container");
 const renderOverlay = document.getElementById("renderOverlay");
 const loadingOverlay = document.getElementById("loadingOverlay");
 const hoverBoxOverlay = document.getElementById("hoverBoxOverlay");
+const hoverInfoOverlay = document.getElementById("hoverInfoOverlay");
 const statusEl = document.getElementById("status");
 const logger = createLogger(statusEl);
 
@@ -63,13 +76,14 @@ const analyticSkyHorizonSoftnessInput = document.getElementById("analyticSkyHori
 const molFileInput = document.getElementById("molFileInput");
 const pdbIdInput = document.getElementById("pdbIdInput");
 const loadPdbIdBtn = document.getElementById("loadPdbId");
+const sceneGraphTree = document.getElementById("sceneGraphTree");
+const representationSelectionHint = document.getElementById("representationSelectionHint");
+const representationActionBtn = document.getElementById("representationActionBtn");
 const pdbDisplayStyle = document.getElementById("pdbDisplayStyle");
 const pdbAtomScale = document.getElementById("pdbAtomScale");
 const pdbBondRadius = document.getElementById("pdbBondRadius");
-const surfaceEnableToggle = document.getElementById("surfaceEnable");
 const probeRadiusInput = document.getElementById("probeRadius");
 const surfaceResolutionInput = document.getElementById("surfaceResolution");
-const smoothNormalsToggle = document.getElementById("smoothNormals");
 const volumeImportToggle = document.getElementById("volumeImportToggle");
 const volumeGridSpacing = document.getElementById("volumeGridSpacing");
 const volumeGaussianScale = document.getElementById("volumeGaussianScale");
@@ -78,8 +92,6 @@ const clipDistanceInput = document.getElementById("clipDistance");
 const clipLockToggle = document.getElementById("clipLock");
 const scaleSelect = document.getElementById("scaleSelect");
 const fastScaleSelect = document.getElementById("fastScaleSelect");
-const useImportedColorToggle = document.getElementById("useImportedColor");
-const baseColorInput = document.getElementById("baseColor");
 const materialSelect = document.getElementById("materialSelect");
 const metallicInput = document.getElementById("metallic");
 const roughnessInput = document.getElementById("roughness");
@@ -88,7 +100,6 @@ const matteSpecularInput = document.getElementById("matteSpecular");
 const matteRoughnessInput = document.getElementById("matteRoughness");
 const matteDiffuseRoughnessInput = document.getElementById("matteDiffuseRoughness");
 const wrapDiffuseInput = document.getElementById("wrapDiffuse");
-const surfaceShowAtomsToggle = document.getElementById("surfaceShowAtoms");
 const surfaceIorInput = document.getElementById("surfaceIor");
 const surfaceTransmissionInput = document.getElementById("surfaceTransmission");
 const showSheetHbondsToggle = document.getElementById("showSheetHbonds");
@@ -124,6 +135,10 @@ const light2Intensity = document.getElementById("light2Intensity");
 const light2Extent = document.getElementById("light2Extent");
 const light2Color = document.getElementById("light2Color");
 const visModeSelect = document.getElementById("visModeSelect");
+const displayAtomControls = document.querySelector(".display-atom-controls");
+const displayBondControls = document.querySelector(".display-bond-controls");
+const displayCartoonControls = document.querySelector(".display-cartoon-controls");
+const displaySesControls = document.querySelector(".display-ses-controls");
 
 const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
 const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
@@ -132,9 +147,10 @@ let sceneData = null;
 let glState = null;
 let isRendering = false;
 let isLoading = false;
-let loggedFirstFrame = false;
 let glInitFailed = false;
-let lastMolContext = null;
+let sceneGraph = null;
+let currentMolMeta = null;
+const repGeometryCache = new Map();
 
 const cameraState = {
   target: [0, 0, 0],
@@ -162,8 +178,7 @@ const renderState = {
   matteRoughness: 0.5,
   matteDiffuseRoughness: 0.5,
   wrapDiffuse: 0.2,
-  surfaceShowAtoms: true,
-  surfaceIor: 1.33,
+  surfaceIor: 1.0,
   surfaceTransmission: 0.35,
   surfaceOpacity: 0.0,
   maxBounces: 4,
@@ -229,6 +244,31 @@ const pointerState = {
 
 let hoverOverlayErrorMessage = null;
 
+const OBJECT_TYPE_LABELS = Object.freeze({
+  protein: "Protein",
+  ligand: "Ligand",
+  water: "Water",
+  "metal-ions": "Metal ions"
+});
+
+function snapshotCurrentMaterial() {
+  return {
+    useImportedColor: true,
+    baseColor: [0.8, 0.8, 0.8],
+    mode: renderState.materialMode,
+    metallic: renderState.metallic,
+    roughness: renderState.roughness,
+    rimBoost: renderState.rimBoost,
+    matteSpecular: renderState.matteSpecular,
+    matteRoughness: renderState.matteRoughness,
+    matteDiffuseRoughness: renderState.matteDiffuseRoughness,
+    wrapDiffuse: renderState.wrapDiffuse,
+    surfaceIor: renderState.surfaceIor,
+    surfaceTransmission: renderState.surfaceTransmission,
+    surfaceOpacity: renderState.surfaceOpacity
+  };
+}
+
 /**
  * Create a test scene with spheres and cylinders for debugging.
  * This can be called manually or hooked up to a UI element.
@@ -271,6 +311,10 @@ function loadTestPrimitives() {
   logger.info(`BVH nodes: ${bvh.nodes.length}, primitives: ${bvh.primitives.length}`);
 
   const flat = flattenBVH(bvh.nodes, bvh.primitives, bvh.triCount, bvh.sphereCount, bvh.cylinderCount);
+  const material = snapshotCurrentMaterial();
+  const triMaterialIndices = new Float32Array(0);
+  const sphereMaterialIndices = new Float32Array(spheres.length);
+  const cylinderMaterialIndices = new Float32Array(cylinders.length);
 
   sceneData = {
     positions,
@@ -288,8 +332,17 @@ function loadTestPrimitives() {
     cylinderCount: bvh.cylinderCount,
     spheres,
     cylinders,
-    sceneScale: 1.0
+    sceneScale: 1.0,
+    pickRanges: null,
+    materials: [material],
+    triMaterialIndices,
+    sphereMaterialIndices,
+    cylinderMaterialIndices
   };
+  sceneGraph = null;
+  currentMolMeta = null;
+  repGeometryCache.clear();
+  renderSceneGraphTree();
   updateClipRange();
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
@@ -362,6 +415,7 @@ function loadRandomSpheres(count) {
   const indices = new Uint32Array(0);
   const normals = new Float32Array(0);
   const triColors = new Float32Array(0);
+  const triFlags = new Float32Array(0);
 
   // Generate random spheres in a cube
   const spheres = [];
@@ -401,6 +455,10 @@ function loadRandomSpheres(count) {
   logger.info(`BVH built in ${bvhTime.toFixed(1)}ms: ${bvh.nodes.length} nodes, ${bvh.primitives.length} primitives`);
 
   const flat = flattenBVH(bvh.nodes, bvh.primitives, bvh.triCount, bvh.sphereCount, bvh.cylinderCount);
+  const material = snapshotCurrentMaterial();
+  const triMaterialIndices = new Float32Array(0);
+  const sphereMaterialIndices = new Float32Array(spheres.length);
+  const cylinderMaterialIndices = new Float32Array(cylinders.length);
 
   sceneData = {
     positions,
@@ -418,8 +476,17 @@ function loadRandomSpheres(count) {
     cylinderCount: bvh.cylinderCount,
     spheres,
     cylinders,
-    sceneScale: 1.0
+    sceneScale: 1.0,
+    pickRanges: null,
+    materials: [material],
+    triMaterialIndices,
+    sphereMaterialIndices,
+    cylinderMaterialIndices
   };
+  sceneGraph = null;
+  currentMolMeta = null;
+  repGeometryCache.clear();
+  renderSceneGraphTree();
   updateClipRange();
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
@@ -493,24 +560,464 @@ window.loadRandomSpheres = loadRandomSpheres;
 /**
  * Get current molecular display options from UI.
  */
-function getMolecularDisplayOptions() {
-  const style = pdbDisplayStyle?.value || "ball-and-stick";
-  const atomScale = parseFloat(pdbAtomScale?.value) || 1.0;
-  const bondRadius = parseFloat(pdbBondRadius?.value) || 0.12;
+function inferSourceKind(filename) {
+  const ext = String(filename || "").toLowerCase();
+  if (ext.endsWith(".pdb")) return "pdb";
+  if (ext.endsWith(".sdf") || ext.endsWith(".mol")) return "sdf";
+  return "pdb";
+}
 
-  // Adjust based on display style
-  if (style === "vdw") {
-    // Van der Waals: full-size atoms, no bonds shown
-    return { displayStyle: style, radiusScale: 1.0, bondRadius: 0, showBonds: false };
-  } else if (style === "cartoon") {
-    return { displayStyle: style, radiusScale: 0.0, bondRadius: 0.0, showBonds: false };
-  } else if (style === "stick") {
-    // Stick: tiny atoms, normal bonds
-    return { displayStyle: style, radiusScale: 0.15, bondRadius: bondRadius, showBonds: true };
-  } else {
-    // Ball and stick: scaled atoms with bonds
-    return { displayStyle: style, radiusScale: atomScale, bondRadius: bondRadius, showBonds: true };
+function getDisplaySettingsFromControls() {
+  const style = String(pdbDisplayStyle?.value || "ball-and-stick");
+  const atomScale = requireNumberInput(pdbAtomScale, "Atom radius scale");
+  const bondRadius = requireNumberInput(pdbBondRadius, "Bond radius");
+  const probeRadius = requireNumberInput(probeRadiusInput, "Probe radius");
+  const surfaceResolution = requireNumberInput(surfaceResolutionInput, "Surface resolution");
+
+  if (atomScale <= 0) throw new Error("Atom radius scale must be > 0.");
+  if (bondRadius < 0) throw new Error("Bond radius must be >= 0.");
+  if (probeRadius <= 0) throw new Error("Probe radius must be > 0.");
+  if (surfaceResolution <= 0) throw new Error("Surface resolution must be > 0.");
+
+  return {
+    style,
+    atomScale,
+    bondRadius,
+    probeRadius,
+    surfaceResolution,
+    showSheetHbonds: showSheetHbondsToggle?.checked || false
+  };
+}
+
+function getMaterialSettingsFromControls() {
+  return {
+    mode: materialSelect?.value || "metallic",
+    metallic: clamp(Number(metallicInput?.value ?? 0.0), 0.0, 1.0),
+    roughness: clamp(Number(roughnessInput?.value ?? 0.4), 0.02, 1.0),
+    rimBoost: clamp(Number(rimBoostInput?.value ?? 0.2), 0.0, 1.0),
+    matteSpecular: clamp(Number(matteSpecularInput?.value ?? 0.03), 0.0, 0.08),
+    matteRoughness: clamp(Number(matteRoughnessInput?.value ?? 0.5), 0.1, 1.0),
+    matteDiffuseRoughness: clamp(Number(matteDiffuseRoughnessInput?.value ?? 0.5), 0.0, 1.0),
+    wrapDiffuse: clamp(Number(wrapDiffuseInput?.value ?? 0.2), 0.0, 0.5),
+    surfaceIor: clamp(Number(surfaceIorInput?.value ?? 1.0), 1.0, 2.5),
+    surfaceTransmission: clamp(Number(surfaceTransmissionInput?.value ?? 0.35), 0.0, 1.0),
+    surfaceOpacity: clamp(Number(surfaceOpacityInput?.value ?? 0.0), 0.0, 1.0)
+  };
+}
+
+function applyMaterialToRenderState(material) {
+  const normalized = cloneMaterial(material);
+  renderState.useImportedColor = true;
+  renderState.baseColor = [0.8, 0.8, 0.8];
+  renderState.materialMode = normalized.mode;
+  renderState.metallic = normalized.metallic;
+  renderState.roughness = normalized.roughness;
+  renderState.rimBoost = normalized.rimBoost;
+  renderState.matteSpecular = normalized.matteSpecular;
+  renderState.matteRoughness = normalized.matteRoughness;
+  renderState.matteDiffuseRoughness = normalized.matteDiffuseRoughness;
+  renderState.wrapDiffuse = normalized.wrapDiffuse;
+  renderState.surfaceIor = normalized.surfaceIor;
+  renderState.surfaceTransmission = normalized.surfaceTransmission;
+  renderState.surfaceOpacity = normalized.surfaceOpacity;
+}
+
+function updateDisplayControlsVisibility() {
+  const style = String(pdbDisplayStyle?.value || "ball-and-stick");
+  if (displayAtomControls) {
+    displayAtomControls.style.display = style === "ball-and-stick" ? "block" : "none";
   }
+  if (displayBondControls) {
+    displayBondControls.style.display = (style === "ball-and-stick" || style === "stick") ? "block" : "none";
+  }
+  if (displayCartoonControls) {
+    displayCartoonControls.style.display = style === "cartoon" ? "block" : "none";
+  }
+  if (displaySesControls) {
+    displaySesControls.style.display = style === "ses" ? "block" : "none";
+  }
+}
+
+function autoRepresentationName(display, material) {
+  const style = String(display?.style || "stick");
+  const materialMode = String(material?.mode || "metallic");
+  const styleLabel = ({
+    "ball-and-stick": "Ball+Stick",
+    vdw: "Spacefill",
+    stick: "Stick",
+    cartoon: "Cartoon",
+    ses: "SES"
+  })[style] || style;
+  const materialLabel = ({
+    metallic: "Metallic",
+    matte: "Matte",
+    "surface-glass": "Surface Glass",
+    "translucent-plastic": "Translucent Plastic"
+  })[materialMode] || materialMode;
+  return `${styleLabel} (${materialLabel})`;
+}
+
+function applyRepresentationToControls(representation, objectType) {
+  if (!representation) return;
+  const display = cloneDisplay(representation.display, objectType);
+  if (pdbDisplayStyle) pdbDisplayStyle.value = display.style;
+  setSliderValue(pdbAtomScale, display.atomScale);
+  setSliderValue(pdbBondRadius, display.bondRadius);
+  setSliderValue(probeRadiusInput, display.probeRadius);
+  setSliderValue(surfaceResolutionInput, display.surfaceResolution);
+  if (showSheetHbondsToggle) showSheetHbondsToggle.checked = Boolean(display.showSheetHbonds);
+  updateDisplayControlsVisibility();
+
+  const material = cloneMaterial(representation.material);
+  if (materialSelect) materialSelect.value = material.mode;
+  setSliderValue(metallicInput, material.metallic);
+  setSliderValue(roughnessInput, material.roughness);
+  setSliderValue(rimBoostInput, material.rimBoost);
+  setSliderValue(matteSpecularInput, material.matteSpecular);
+  setSliderValue(matteRoughnessInput, material.matteRoughness);
+  setSliderValue(matteDiffuseRoughnessInput, material.matteDiffuseRoughness);
+  setSliderValue(wrapDiffuseInput, material.wrapDiffuse);
+  setSliderValue(surfaceIorInput, material.surfaceIor);
+  setSliderValue(surfaceTransmissionInput, material.surfaceTransmission);
+  setSliderValue(surfaceOpacityInput, material.surfaceOpacity);
+  updateMaterialVisibility();
+}
+
+function getSelectedObject() {
+  if (!sceneGraph?.selection?.objectId) return null;
+  try {
+    return findObject(sceneGraph, sceneGraph.selection.objectId);
+  } catch {
+    return null;
+  }
+}
+
+function getSelectedRepresentation() {
+  if (!sceneGraph?.selection || sceneGraph.selection.kind !== "representation") {
+    return null;
+  }
+  try {
+    return findRepresentation(
+      sceneGraph,
+      sceneGraph.selection.objectId,
+      sceneGraph.selection.representationId
+    );
+  } catch {
+    return null;
+  }
+}
+
+function updateRepresentationControlsFromSelection() {
+  const selectedRep = getSelectedRepresentation();
+  const selectedObject = getSelectedObject();
+  if (!selectedObject) {
+    if (representationSelectionHint) {
+      representationSelectionHint.textContent = "Select an object or representation in Scene Graph.";
+    }
+    if (representationActionBtn) {
+      representationActionBtn.disabled = true;
+      representationActionBtn.textContent = "Add representation";
+    }
+    return;
+  }
+
+  const objectLabel = selectedObject.label || selectedObject.type;
+  if (selectedRep) {
+    if (representationSelectionHint) {
+      representationSelectionHint.textContent = `Selected: ${objectLabel} / ${selectedRep.representation.name}`;
+    }
+    if (representationActionBtn) {
+      representationActionBtn.disabled = false;
+      representationActionBtn.textContent = "Modify representation";
+    }
+    applyRepresentationToControls(selectedRep.representation, selectedObject.type);
+  } else {
+    if (representationSelectionHint) {
+      representationSelectionHint.textContent = `Selected object: ${objectLabel}`;
+    }
+    if (representationActionBtn) {
+      representationActionBtn.disabled = false;
+      representationActionBtn.textContent = "Add representation";
+    }
+  }
+}
+
+function createSceneGraphRow(label, checked, selected, options = {}) {
+  const className = options.className || "";
+  const collapsible = Boolean(options.collapsible);
+  const expanded = options.expanded !== false;
+  const row = document.createElement("div");
+  row.className = `scene-graph-row ${className}`.trim();
+  if (selected) {
+    row.classList.add("selected");
+  }
+
+  let toggle = null;
+  if (collapsible) {
+    toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "scene-graph-toggle";
+    toggle.textContent = expanded ? "▾" : "▸";
+    row.appendChild(toggle);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.className = "scene-graph-toggle-spacer";
+    row.appendChild(spacer);
+  }
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = checked;
+  row.appendChild(checkbox);
+
+  const labelText = String(label || "").trim();
+  const labelMatch = labelText.match(/^(.*?)(\s*\([^()]+\))$/);
+  const mainLabel = labelMatch ? labelMatch[1].trim() : labelText;
+  const metaLabel = labelMatch ? labelMatch[2].trim() : "";
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "scene-graph-label";
+
+  const labelMainEl = document.createElement("span");
+  labelMainEl.className = "scene-graph-label-main";
+  labelMainEl.textContent = mainLabel;
+  labelEl.appendChild(labelMainEl);
+
+  if (metaLabel) {
+    const labelMetaEl = document.createElement("span");
+    labelMetaEl.className = "scene-graph-label-meta";
+    labelMetaEl.textContent = metaLabel;
+    labelEl.appendChild(labelMetaEl);
+  }
+
+  row.appendChild(labelEl);
+
+  return { row, checkbox, toggle };
+}
+
+async function rebuildSceneFromSceneGraph(options = {}) {
+  if (!sceneGraph) {
+    throw new Error("Scene graph is empty.");
+  }
+  const fitCamera = options.fitCamera ?? false;
+  const visible = listVisibleRepresentations(sceneGraph);
+  if (visible.length === 0) {
+    sceneData = null;
+    glState = null;
+    hideHoverBoxOverlay();
+    hideHoverInfoOverlay();
+    resetAccumulation("No visible representations.");
+    return;
+  }
+
+  const compiled = compileSceneGraphGeometry(sceneGraph, {
+    geometryCache: repGeometryCache,
+    logger
+  });
+
+  applyMaterialToRenderState(compiled.primaryMaterial);
+
+  const positions = compiled.positions;
+  const indices = compiled.indices;
+  const normals = compiled.normals;
+  const triColors = compiled.triColors;
+  const triFlags = compiled.triFlags;
+  const displaySpheres = compiled.spheres;
+  const displayCylinders = compiled.cylinders;
+
+  logger.info(
+    `Compiling scene graph: ${displaySpheres.length} atoms, ${displayCylinders.length} bonds, ${indices.length / 3} triangles`
+  );
+  const startTime = performance.now();
+  const bvh = buildUnifiedBVH(
+    { positions, indices },
+    displaySpheres,
+    displayCylinders,
+    { maxLeafSize: 4, maxDepth: 32 }
+  );
+  const bvhTime = performance.now() - startTime;
+  logger.info(`BVH built in ${bvhTime.toFixed(1)}ms: ${bvh.nodes.length} nodes`);
+
+  const flat = flattenBVH(bvh.nodes, bvh.primitives, bvh.triCount, bvh.sphereCount, bvh.cylinderCount);
+  const volumeData = currentMolMeta?.volumeData || null;
+
+  sceneData = {
+    positions,
+    indices,
+    normals,
+    triColors,
+    triFlags,
+    hasSurfaceFlags: hasSurfaceFlags(triFlags),
+    nodes: bvh.nodes,
+    tris: bvh.tris,
+    primitives: bvh.primitives,
+    primIndexBuffer: flat.primIndexBuffer,
+    triCount: bvh.triCount,
+    sphereCount: bvh.sphereCount,
+    cylinderCount: bvh.cylinderCount,
+    spheres: displaySpheres,
+    cylinders: displayCylinders,
+    sceneScale: 1.0,
+    volume: volumeData,
+    pickRanges: compiled.pickRanges,
+    materials: compiled.materials,
+    triMaterialIndices: compiled.triMaterialIndices,
+    sphereMaterialIndices: compiled.sphereMaterialIndices,
+    cylinderMaterialIndices: compiled.cylinderMaterialIndices
+  };
+  renderState.frameIndex = 0;
+  renderState.cameraDirty = true;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  let hasBounds = false;
+
+  for (const s of displaySpheres) {
+    minX = Math.min(minX, s.center[0] - s.radius);
+    minY = Math.min(minY, s.center[1] - s.radius);
+    minZ = Math.min(minZ, s.center[2] - s.radius);
+    maxX = Math.max(maxX, s.center[0] + s.radius);
+    maxY = Math.max(maxY, s.center[1] + s.radius);
+    maxZ = Math.max(maxZ, s.center[2] + s.radius);
+    hasBounds = true;
+  }
+
+  for (const c of displayCylinders) {
+    minX = Math.min(minX, c.p1[0] - c.radius, c.p2[0] - c.radius);
+    minY = Math.min(minY, c.p1[1] - c.radius, c.p2[1] - c.radius);
+    minZ = Math.min(minZ, c.p1[2] - c.radius, c.p2[2] - c.radius);
+    maxX = Math.max(maxX, c.p1[0] + c.radius, c.p2[0] + c.radius);
+    maxY = Math.max(maxY, c.p1[1] + c.radius, c.p2[1] + c.radius);
+    maxZ = Math.max(maxZ, c.p1[2] + c.radius, c.p2[2] + c.radius);
+    hasBounds = true;
+  }
+
+  for (let i = 0; i < positions.length; i += 3) {
+    minX = Math.min(minX, positions[i]);
+    minY = Math.min(minY, positions[i + 1]);
+    minZ = Math.min(minZ, positions[i + 2]);
+    maxX = Math.max(maxX, positions[i]);
+    maxY = Math.max(maxY, positions[i + 1]);
+    maxZ = Math.max(maxZ, positions[i + 2]);
+    hasBounds = true;
+  }
+
+  if (volumeData && volumeData.bounds) {
+    if (!hasBounds) {
+      minX = volumeData.bounds.minX;
+      minY = volumeData.bounds.minY;
+      minZ = volumeData.bounds.minZ;
+      maxX = volumeData.bounds.maxX;
+      maxY = volumeData.bounds.maxY;
+      maxZ = volumeData.bounds.maxZ;
+      hasBounds = true;
+    } else {
+      minX = Math.min(minX, volumeData.bounds.minX);
+      minY = Math.min(minY, volumeData.bounds.minY);
+      minZ = Math.min(minZ, volumeData.bounds.minZ);
+      maxX = Math.max(maxX, volumeData.bounds.maxX);
+      maxY = Math.max(maxY, volumeData.bounds.maxY);
+      maxZ = Math.max(maxZ, volumeData.bounds.maxZ);
+    }
+  }
+
+  if (!hasBounds) {
+    throw new Error("Could not determine scene bounds (no visible geometry).");
+  }
+
+  const bounds = { minX, minY, minZ, maxX, maxY, maxZ };
+  const dx = bounds.maxX - bounds.minX;
+  const dy = bounds.maxY - bounds.minY;
+  const dz = bounds.maxZ - bounds.minZ;
+  sceneData.sceneScale = Math.max(1e-3, Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5);
+  const suggestedBias = Math.max(1e-5, sceneData.sceneScale * 1e-5);
+  renderState.rayBias = suggestedBias;
+  renderState.tMin = suggestedBias;
+  if (fitCamera) {
+    applyCameraToBounds(bounds);
+  }
+
+  updateClipRange();
+  glState = null;
+}
+
+function renderSceneGraphTree() {
+  if (!sceneGraphTree) {
+    throw new Error("Scene graph tree container is missing.");
+  }
+  sceneGraphTree.innerHTML = "";
+
+  if (!sceneGraph || !Array.isArray(sceneGraph.objects) || sceneGraph.objects.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "selection-hint";
+    empty.textContent = "No objects loaded.";
+    sceneGraphTree.appendChild(empty);
+    updateRepresentationControlsFromSelection();
+    return;
+  }
+
+  for (const object of sceneGraph.objects) {
+    if (typeof object.expanded !== "boolean") {
+      object.expanded = true;
+    }
+    const group = document.createElement("div");
+    group.className = "scene-graph-group";
+    const objectSelected = sceneGraph.selection?.kind === "object" && sceneGraph.selection.objectId === object.id;
+    const { row, checkbox, toggle } = createSceneGraphRow(object.label, object.visible, objectSelected, {
+      className: "object",
+      collapsible: true,
+      expanded: object.expanded
+    });
+
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      toggleObjectVisibility(sceneGraph, object.id, checkbox.checked);
+      rebuildSceneFromSceneGraph().then(() => startRenderLoop()).catch((err) => logger.error(err.message || String(err)));
+    });
+    toggle?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      object.expanded = !object.expanded;
+      renderSceneGraphTree();
+    });
+    row.addEventListener("click", () => {
+      selectObject(sceneGraph, object.id);
+      renderSceneGraphTree();
+    });
+    group.appendChild(row);
+
+    const children = document.createElement("div");
+    children.className = "scene-graph-children";
+    children.style.display = object.expanded ? "flex" : "none";
+
+    for (const representation of object.representations) {
+      const repSelected = (
+        sceneGraph.selection?.kind === "representation"
+        && sceneGraph.selection.objectId === object.id
+        && sceneGraph.selection.representationId === representation.id
+      );
+      const repRow = createSceneGraphRow(representation.name, representation.visible, repSelected, {
+        className: "rep"
+      });
+      repRow.checkbox.addEventListener("click", (event) => event.stopPropagation());
+      repRow.checkbox.addEventListener("change", () => {
+        toggleRepresentationVisibility(sceneGraph, object.id, representation.id, repRow.checkbox.checked);
+        rebuildSceneFromSceneGraph().then(() => startRenderLoop()).catch((err) => logger.error(err.message || String(err)));
+      });
+      repRow.row.addEventListener("click", () => {
+        selectRepresentation(sceneGraph, object.id, representation.id);
+        renderSceneGraphTree();
+      });
+      children.appendChild(repRow.row);
+    }
+    group.appendChild(children);
+    sceneGraphTree.appendChild(group);
+  }
+
+  updateRepresentationControlsFromSelection();
 }
 
 function requireNumberInput(input, label) {
@@ -577,9 +1084,6 @@ async function loadMolecularFile(text, filename) {
   const molData = parseAutoDetect(text, filename);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
 
-  const options = getMolecularDisplayOptions();
-  const { spheres, cylinders } = moleculeToGeometry(molData, options);
-
   const volumeOpts = getVolumeImportOptions();
   let volumeData = null;
   if (volumeOpts.enabled) {
@@ -588,279 +1092,11 @@ async function loadMolecularFile(text, filename) {
     }
     volumeData = buildNitrogenVolume(molData, volumeOpts);
   }
-
-  const surfaceAtomMode = (
-    (renderState.materialMode === "surface-glass" || renderState.materialMode === "translucent-plastic")
-    && renderState.surfaceShowAtoms
-  ) ? "all" : "hetero";
-  lastMolContext = { spheres, cylinders, molData, options, volumeData, surfaceAtomMode };
-  await loadMolecularGeometry(spheres, cylinders, molData, options, volumeData, surfaceAtomMode);
-}
-
-/**
- * Load molecular geometry from spheres and cylinders.
- */
-async function loadMolecularGeometry(
-  spheres,
-  cylinders,
-  molData = null,
-  options = null,
-  volumeData = null,
-  surfaceAtomMode = "hetero"
-) {
-  const showSurface = surfaceEnableToggle?.checked || false;
-  const displayOptions = options ?? getMolecularDisplayOptions();
-  const displayStyle = displayOptions.displayStyle || "ball-and-stick";
-  const heteroDisplayOptions = displayStyle === "cartoon"
-    ? { radiusScale: 0.4, bondRadius: 0.12, showBonds: true }
-    : displayOptions;
-  const split = molData ? splitMolDataByHetatm(molData) : null;
-  const heteroGeometry = split ? moleculeToGeometry(split.hetero, heteroDisplayOptions) : { spheres: [], cylinders: [] };
-
-  // If showing surface, hide atoms/bonds unless it's VdW mode
-  let displaySpheres = spheres;
-  let displayCylinders = cylinders;
-
-  let positions = new Float32Array(0);
-  let indices = new Uint32Array(0);
-  let normals = new Float32Array(0);
-  let triColors = new Float32Array(0);
-  let triFlags = new Float32Array(0);
-  let debugHbonds = [];
-
-  if (displayStyle === "cartoon" && molData) {
-    logger.info("Computing backbone cartoon (DSSP)...");
-    if (molData.secondary) {
-      const helixCount = molData.secondary.helices?.length || 0;
-      const sheetCount = molData.secondary.sheets?.length || 0;
-      if (helixCount + sheetCount > 0) {
-        logger.info(`PDB secondary structure: ${helixCount} helices, ${sheetCount} sheets`);
-      }
-    }
-    const cartoonStart = performance.now();
-    const cartoon = buildBackboneCartoon(molData, {
-      debugSheetOrientation: true,
-      debugLog: (msg) => logger.info(msg)
-    });
-    const cartoonTime = performance.now() - cartoonStart;
-    logger.info(`Cartoon built in ${cartoonTime.toFixed(0)}ms: ${cartoon.indices.length / 3} triangles`);
-
-    positions = cartoon.positions;
-    indices = cartoon.indices;
-    normals = cartoon.normals;
-    triColors = cartoon.triColors;
-    triFlags = new Float32Array(cartoon.indices.length / 3);
-
-    displaySpheres = heteroGeometry.spheres;
-    displayCylinders = heteroGeometry.cylinders;
-
-    if (showSheetHbondsToggle?.checked) {
-      debugHbonds = buildSheetHbondCylinders(molData);
-      if (debugHbonds.length > 0) {
-        logger.info(`Debug: ${debugHbonds.length} sheet H-bonds`);
-      }
-    }
-  }
-
-  if (showSurface && molData && molData.atoms && molData.atoms.length > 0) {
-    const surfaceAtoms = split ? split.standard.atoms : molData.atoms;
-    if (surfaceAtoms.length === 0) {
-      logger.warn("No non-HETATM atoms available for surface; rendering atoms only.");
-    } else {
-      const probeRadius = parseFloat(probeRadiusInput?.value) || 1.4;
-      const resolution = parseFloat(surfaceResolutionInput?.value) || 0.25;
-      const smoothNormals = smoothNormalsToggle?.checked || false;
-
-      logger.info(
-        `Computing SES surface (WebGPU, probe=${probeRadius}Å, resolution=${resolution}Å, smoothNormals=${smoothNormals})...`
-      );
-      const surfaceStart = performance.now();
-
-      // Use VdW radii from molecular data
-      const ELEMENT_RADII = {
-        H: 1.20, C: 1.70, N: 1.55, O: 1.52, S: 1.80, P: 1.80,
-        F: 1.47, Cl: 1.75, Br: 1.85, I: 1.98, DEFAULT: 1.70
-      };
-
-      const atoms = surfaceAtoms.map(a => ({
-        center: a.position,
-        radius: ELEMENT_RADII[a.element] || ELEMENT_RADII.DEFAULT
-      }));
-
-      let sesMesh = null;
-      try {
-        sesMesh = computeSESWebGL(atoms, { probeRadius, resolution, smoothNormals });
-      } catch (err) {
-        logger.error(err.message || String(err));
-        throw err;
-      }
-      const surfaceTime = performance.now() - surfaceStart;
-      logger.info(
-        `SES WebGPU completed in ${surfaceTime.toFixed(0)}ms: ${sesMesh.indices.length / 3} triangles`
-      );
-
-      if (sesMesh.vertices.length > 0) {
-
-        const surfaceData = sesToTriangles(sesMesh, [0.7, 0.75, 0.9]);
-        const surfaceFlags = new Float32Array(surfaceData.indices.length / 3);
-        surfaceFlags.fill(1);
-        const surfaceMesh = {
-          positions: surfaceData.positions,
-          indices: surfaceData.indices,
-          normals: surfaceData.normals,
-          triColors: surfaceData.triColors,
-          triFlags: surfaceFlags
-        };
-
-        if (displayStyle === "cartoon") {
-          const merged = mergeTriangleMeshes({ positions, indices, normals, triColors, triFlags }, surfaceMesh);
-          positions = merged.positions;
-          indices = merged.indices;
-          normals = merged.normals;
-          triColors = merged.triColors;
-          triFlags = merged.triFlags;
-        } else {
-          positions = surfaceData.positions;
-          indices = surfaceData.indices;
-          normals = surfaceData.normals;
-          triColors = surfaceData.triColors;
-          triFlags = surfaceFlags;
-        }
-
-        if (surfaceAtomMode === "all") {
-          displaySpheres = spheres;
-          displayCylinders = cylinders;
-        } else {
-          // Keep HETATM atoms/bonds visible.
-          displaySpheres = heteroGeometry.spheres;
-          displayCylinders = heteroGeometry.cylinders;
-        }
-      } else {
-        logger.warn("SES computation produced no surface");
-      }
-    }
-  }
-
-  if (debugHbonds.length > 0) {
-    displayCylinders = displayCylinders.concat(debugHbonds);
-  }
-
-  logger.info(`Loading ${displaySpheres.length} atoms, ${displayCylinders.length} bonds, ${indices.length / 3} triangles`);
-
-  const startTime = performance.now();
-
-  const bvh = buildUnifiedBVH(
-    { positions, indices },
-    displaySpheres,
-    displayCylinders,
-    { maxLeafSize: 4, maxDepth: 32 }
-  );
-
-  const bvhTime = performance.now() - startTime;
-  logger.info(`BVH built in ${bvhTime.toFixed(1)}ms: ${bvh.nodes.length} nodes`);
-
-  const flat = flattenBVH(bvh.nodes, bvh.primitives, bvh.triCount, bvh.sphereCount, bvh.cylinderCount);
-
-  sceneData = {
-    positions,
-    indices,
-    normals,
-    triColors,
-    triFlags,
-    hasSurfaceFlags: hasSurfaceFlags(triFlags),
-    nodes: bvh.nodes,
-    tris: bvh.tris,
-    primitives: bvh.primitives,
-    primIndexBuffer: flat.primIndexBuffer,
-    triCount: bvh.triCount,
-    sphereCount: bvh.sphereCount,
-    cylinderCount: bvh.cylinderCount,
-    spheres: displaySpheres,
-    cylinders: displayCylinders,
-    surfaceAtomMode,
-    sceneScale: 1.0,
-    volume: volumeData
-  };
-  renderState.frameIndex = 0;
-  renderState.cameraDirty = true;
-
-  // Compute bounds from all geometry
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  let hasBounds = false;
-
-  for (const s of displaySpheres) {
-    minX = Math.min(minX, s.center[0] - s.radius);
-    minY = Math.min(minY, s.center[1] - s.radius);
-    minZ = Math.min(minZ, s.center[2] - s.radius);
-    maxX = Math.max(maxX, s.center[0] + s.radius);
-    maxY = Math.max(maxY, s.center[1] + s.radius);
-    maxZ = Math.max(maxZ, s.center[2] + s.radius);
-    hasBounds = true;
-  }
-
-  for (const c of displayCylinders) {
-    minX = Math.min(minX, c.p1[0] - c.radius, c.p2[0] - c.radius);
-    minY = Math.min(minY, c.p1[1] - c.radius, c.p2[1] - c.radius);
-    minZ = Math.min(minZ, c.p1[2] - c.radius, c.p2[2] - c.radius);
-    maxX = Math.max(maxX, c.p1[0] + c.radius, c.p2[0] + c.radius);
-    maxY = Math.max(maxY, c.p1[1] + c.radius, c.p2[1] + c.radius);
-    maxZ = Math.max(maxZ, c.p1[2] + c.radius, c.p2[2] + c.radius);
-    hasBounds = true;
-  }
-
-  // Include surface triangles in bounds
-  for (let i = 0; i < positions.length; i += 3) {
-    minX = Math.min(minX, positions[i]);
-    minY = Math.min(minY, positions[i + 1]);
-    minZ = Math.min(minZ, positions[i + 2]);
-    maxX = Math.max(maxX, positions[i]);
-    maxY = Math.max(maxY, positions[i + 1]);
-    maxZ = Math.max(maxZ, positions[i + 2]);
-    hasBounds = true;
-  }
-
-  if (volumeData && volumeData.bounds) {
-    if (!hasBounds) {
-      minX = volumeData.bounds.minX;
-      minY = volumeData.bounds.minY;
-      minZ = volumeData.bounds.minZ;
-      maxX = volumeData.bounds.maxX;
-      maxY = volumeData.bounds.maxY;
-      maxZ = volumeData.bounds.maxZ;
-      hasBounds = true;
-    } else {
-      minX = Math.min(minX, volumeData.bounds.minX);
-      minY = Math.min(minY, volumeData.bounds.minY);
-      minZ = Math.min(minZ, volumeData.bounds.minZ);
-      maxX = Math.max(maxX, volumeData.bounds.maxX);
-      maxY = Math.max(maxY, volumeData.bounds.maxY);
-      maxZ = Math.max(maxZ, volumeData.bounds.maxZ);
-    }
-  }
-
-  if (!hasBounds) {
-    throw new Error("Could not determine scene bounds (no geometry or volume data).");
-  }
-
-  const bounds = { minX, minY, minZ, maxX, maxY, maxZ };
-  logger.info(
-    `Bounds: (${bounds.minX.toFixed(1)}, ${bounds.minY.toFixed(1)}, ${bounds.minZ.toFixed(1)}) to (${bounds.maxX.toFixed(1)}, ${bounds.maxY.toFixed(1)}, ${bounds.maxZ.toFixed(1)})`
-  );
-
-  const dx = bounds.maxX - bounds.minX;
-  const dy = bounds.maxY - bounds.minY;
-  const dz = bounds.maxZ - bounds.minZ;
-  sceneData.sceneScale = Math.max(1e-3, Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5);
-  const suggestedBias = Math.max(1e-5, sceneData.sceneScale * 1e-5);
-  renderState.rayBias = suggestedBias;
-  renderState.tMin = suggestedBias;
-  applyCameraToBounds(bounds);
-
-  if (glState) {
-    glState.textures = null;
-  }
-
+  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: inferSourceKind(filename) });
+  currentMolMeta = { sourceKind: inferSourceKind(filename), volumeData };
+  repGeometryCache.clear();
+  renderSceneGraphTree();
+  await rebuildSceneFromSceneGraph({ fitCamera: true });
   logger.info("Molecular structure loaded.");
 }
 
@@ -872,18 +1108,13 @@ async function loadPDBById(pdbId) {
   const molData = await fetchPDB(pdbId);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
 
-  const options = getMolecularDisplayOptions();
-  const { spheres, cylinders } = moleculeToGeometry(molData, options);
-
   const volumeOpts = getVolumeImportOptions();
   const volumeData = volumeOpts.enabled ? buildNitrogenVolume(molData, volumeOpts) : null;
-
-  const surfaceAtomMode = (
-    (renderState.materialMode === "surface-glass" || renderState.materialMode === "translucent-plastic")
-    && renderState.surfaceShowAtoms
-  ) ? "all" : "hetero";
-  lastMolContext = { spheres, cylinders, molData, options, volumeData, surfaceAtomMode };
-  await loadMolecularGeometry(spheres, cylinders, molData, options, volumeData, surfaceAtomMode);
+  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: "pdb" });
+  currentMolMeta = { sourceKind: "pdb", volumeData };
+  repGeometryCache.clear();
+  renderSceneGraphTree();
+  await rebuildSceneFromSceneGraph({ fitCamera: true });
 }
 
 /**
@@ -893,16 +1124,11 @@ async function loadBuiltinMolecule(name) {
   logger.info(`Loading built-in molecule: ${name}`);
   const molData = getBuiltinMolecule(name);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
-
-  const options = getMolecularDisplayOptions();
-  const { spheres, cylinders } = moleculeToGeometry(molData, options);
-
-  const surfaceAtomMode = (
-    (renderState.materialMode === "surface-glass" || renderState.materialMode === "translucent-plastic")
-    && renderState.surfaceShowAtoms
-  ) ? "all" : "hetero";
-  lastMolContext = { spheres, cylinders, molData, options, volumeData: null, surfaceAtomMode };
-  await loadMolecularGeometry(spheres, cylinders, molData, options, null, surfaceAtomMode);
+  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: "sdf" });
+  currentMolMeta = { sourceKind: "sdf", volumeData: null };
+  repGeometryCache.clear();
+  renderSceneGraphTree();
+  await rebuildSceneFromSceneGraph({ fitCamera: true });
 }
 
 // Expose for debugging in console
@@ -991,7 +1217,6 @@ function lightDirFromAngles(azimuthDeg, elevationDeg) {
 function resetAccumulation(reason) {
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
-  loggedFirstFrame = false;
   if (renderOverlay) {
     renderOverlay.style.display = "none";
   }
@@ -1001,20 +1226,6 @@ function resetAccumulation(reason) {
 }
 
 function updateMaterialState() {
-  renderState.useImportedColor = useImportedColorToggle.checked;
-  renderState.baseColor = hexToRgb(baseColorInput.value);
-  renderState.materialMode = materialSelect?.value || "metallic";
-  renderState.metallic = clamp(Number(metallicInput.value), 0, 1);
-  renderState.roughness = clamp(Number(roughnessInput.value), 0.02, 1);
-  renderState.rimBoost = clamp(Number(rimBoostInput?.value ?? 0.2), 0.0, 1.0);
-  renderState.matteSpecular = clamp(Number(matteSpecularInput?.value ?? 0.03), 0.0, 0.08);
-  renderState.matteRoughness = clamp(Number(matteRoughnessInput?.value ?? 0.5), 0.1, 1.0);
-  renderState.matteDiffuseRoughness = clamp(Number(matteDiffuseRoughnessInput?.value ?? 0.5), 0.0, 1.0);
-  renderState.wrapDiffuse = clamp(Number(wrapDiffuseInput?.value ?? 0.2), 0.0, 0.5);
-  renderState.surfaceShowAtoms = surfaceShowAtomsToggle?.checked ?? true;
-  renderState.surfaceIor = clamp(Number(surfaceIorInput?.value ?? 1.33), 1.0, 2.5);
-  renderState.surfaceTransmission = clamp(Number(surfaceTransmissionInput?.value ?? 0.35), 0.0, 1.0);
-  renderState.surfaceOpacity = clamp(Number(surfaceOpacityInput?.value ?? 0.0), 0.0, 1.0);
   renderState.maxBounces = clamp(Number(maxBouncesInput.value), 0, 6);
   renderState.exposure = clamp(Number(exposureInput.value), 0, 5);
   renderState.dofEnabled = dofEnableToggle?.checked ?? false;
@@ -1037,7 +1248,7 @@ function updateMaterialState() {
   renderState.samplesPerBounce = clamp(Number(samplesPerBounceInput.value), 1, 8);
   renderState.castShadows = shadowToggle.checked;
   renderState.toneMap = toneMapSelect?.value || "reinhard";
-  resetAccumulation("Material settings updated.");
+  resetAccumulation("Render settings updated.");
 }
 
 function updateVolumeState() {
@@ -1097,24 +1308,61 @@ function applyMaterialPreset(mode) {
   logger.info("Applied preset: Translucent Plastic");
 }
 
-async function refreshSurfaceAtomMode() {
-  if (!lastMolContext || !lastMolContext.molData) return;
-  if (!surfaceEnableToggle?.checked) return;
-  const usesSurfaceTranslucency = (
-    renderState.materialMode === "surface-glass" || renderState.materialMode === "translucent-plastic"
-  );
-  const desiredMode = usesSurfaceTranslucency && renderState.surfaceShowAtoms ? "all" : "hetero";
-  if (lastMolContext.surfaceAtomMode === desiredMode) return;
-  lastMolContext.surfaceAtomMode = desiredMode;
-  logger.info(`Reloading molecular geometry for surface (${desiredMode} atoms).`);
-  await loadMolecularGeometry(
-    lastMolContext.spheres,
-    lastMolContext.cylinders,
-    lastMolContext.molData,
-    lastMolContext.options,
-    lastMolContext.volumeData,
-    desiredMode
-  );
+function buildRepresentationPatchFromUi(objectType) {
+  const display = cloneDisplay(getDisplaySettingsFromControls(), objectType);
+  const material = cloneMaterial(getMaterialSettingsFromControls());
+  return {
+    name: autoRepresentationName(display, material),
+    display,
+    material
+  };
+}
+
+async function modifySelectedRepresentationFromUi() {
+  if (!sceneGraph || sceneGraph.selection?.kind !== "representation") {
+    throw new Error("Select a representation first.");
+  }
+  const object = findObject(sceneGraph, sceneGraph.selection.objectId);
+  const patch = buildRepresentationPatchFromUi(object.type);
+  updateRepresentation(sceneGraph, object.id, sceneGraph.selection.representationId, patch);
+  repGeometryCache.delete(sceneGraph.selection.representationId);
+  applyMaterialToRenderState(patch.material);
+  updateMaterialState();
+  await rebuildSceneFromSceneGraph();
+  renderSceneGraphTree();
+  resetAccumulation("Representation updated.");
+}
+
+async function addRepresentationFromUi() {
+  if (!sceneGraph || sceneGraph.selection?.kind !== "object") {
+    throw new Error("Select an object to add a representation.");
+  }
+  const objectId = sceneGraph.selection.objectId;
+  const newRep = addRepresentationToObject(sceneGraph, objectId);
+  const object = findObject(sceneGraph, objectId);
+  const patch = buildRepresentationPatchFromUi(object.type);
+  updateRepresentation(sceneGraph, objectId, newRep.id, patch);
+  repGeometryCache.delete(newRep.id);
+  applyMaterialToRenderState(patch.material);
+  updateMaterialState();
+  await rebuildSceneFromSceneGraph();
+  renderSceneGraphTree();
+  resetAccumulation("Representation added.");
+}
+
+async function applyRepresentationActionFromSelection() {
+  if (!sceneGraph || !sceneGraph.selection) {
+    throw new Error("Select an object or representation first.");
+  }
+  if (sceneGraph.selection.kind === "representation") {
+    await modifySelectedRepresentationFromUi();
+    return;
+  }
+  if (sceneGraph.selection.kind === "object") {
+    await addRepresentationFromUi();
+    return;
+  }
+  throw new Error("Unsupported scene graph selection.");
 }
 
 function updateClipState({ preserveLock = false } = {}) {
@@ -1415,9 +1663,20 @@ function getActiveClipPlane(camera) {
   return { enabled, normal, offset, side };
 }
 
+function hideHoverInfoOverlay() {
+  if (!hoverInfoOverlay) return;
+  hoverInfoOverlay.style.display = "none";
+}
+
 function hideHoverBoxOverlay() {
   if (!hoverBoxOverlay) return;
   hoverBoxOverlay.style.display = "none";
+}
+
+function drawHoverInfoOverlay(label) {
+  if (!hoverInfoOverlay || !label) return;
+  hoverInfoOverlay.textContent = label;
+  hoverInfoOverlay.style.display = "block";
 }
 
 function drawHoverBoxOverlay(box) {
@@ -1433,10 +1692,145 @@ function drawHoverBoxOverlay(box) {
   hoverBoxOverlay.style.display = "block";
 }
 
+function getHoverObjectLabelFromRange(range) {
+  const fromLabel = String(range?.objectLabel || "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+  if (fromLabel.length > 0) {
+    return fromLabel;
+  }
+  const objectType = String(range?.objectType || "");
+  if (OBJECT_TYPE_LABELS[objectType]) {
+    return OBJECT_TYPE_LABELS[objectType];
+  }
+  return "Object";
+}
+
+function getSceneObjectByRange(range) {
+  if (!range?.objectId || !sceneGraph?.objects) {
+    return null;
+  }
+  return sceneGraph.objects.find((object) => object.id === range.objectId) || null;
+}
+
+function atomChainLabel(atom) {
+  const chain = String(atom?.chainId || "").trim();
+  return chain.length > 0 ? chain : "?";
+}
+
+function atomResidueLabel(atom) {
+  const name = String(atom?.resName || "").trim() || "RES";
+  const seqValue = Number(atom?.resSeq);
+  const seq = Number.isFinite(seqValue)
+    ? String(Math.trunc(seqValue))
+    : (String(atom?.resSeq || "").trim() || "?");
+  const insertion = String(atom?.iCode || "").trim();
+  return `${name}${seq}${insertion}`;
+}
+
+function atomNameLabel(atom) {
+  const atomName = String(atom?.name || "").trim();
+  if (atomName.length > 0) {
+    return atomName;
+  }
+  return String(atom?.element || "").trim() || "atom";
+}
+
+function formatAtomPath(atom) {
+  return `${atomChainLabel(atom)} -> ${atomResidueLabel(atom)} -> ${atomNameLabel(atom)}`;
+}
+
+function formatShortAtomLabel(atom) {
+  return `${atomChainLabel(atom)}:${atomResidueLabel(atom)}:${atomNameLabel(atom)}`;
+}
+
+function getHoverLabelForHit(hit) {
+  if (!sceneData) {
+    return null;
+  }
+  const range = findPrimitivePickRange(sceneData.pickRanges, hit.primType, hit.primIndex);
+  if (!range) {
+    return `${primTypeLabel(hit.primType)} ${hit.primIndex}`;
+  }
+
+  const objectLabel = getHoverObjectLabelFromRange(range);
+  const sceneObject = getSceneObjectByRange(range);
+  const atoms = sceneObject?.molData?.atoms;
+  const localIndex = hit.primIndex - range.start;
+
+  if (hit.primType === PRIM_SPHERE && range.sphereAtomIndices && Array.isArray(atoms)) {
+    const atomIndex = range.sphereAtomIndices[localIndex];
+    const atom = Number.isInteger(atomIndex) ? atoms[atomIndex] : null;
+    if (atom) {
+      return `${objectLabel} [${formatAtomPath(atom)}]`;
+    }
+  }
+
+  if (hit.primType === PRIM_CYLINDER && range.cylinderBondAtomPairs && Array.isArray(atoms)) {
+    const bondPair = range.cylinderBondAtomPairs[localIndex];
+    if (Array.isArray(bondPair) && bondPair.length === 2) {
+      const atomA = atoms[bondPair[0]];
+      const atomB = atoms[bondPair[1]];
+      if (atomA && atomB) {
+        const sameResidue = atomChainLabel(atomA) === atomChainLabel(atomB)
+          && atomResidueLabel(atomA) === atomResidueLabel(atomB);
+        if (sameResidue) {
+          return `${objectLabel} [${atomChainLabel(atomA)} -> ${atomResidueLabel(atomA)} -> ${atomNameLabel(atomA)}-${atomNameLabel(atomB)}]`;
+        }
+        return `${objectLabel} [${formatShortAtomLabel(atomA)} -> ${formatShortAtomLabel(atomB)}]`;
+      }
+    }
+  }
+
+  const repName = String(range.representationName || "").trim();
+  if (repName.length > 0) {
+    return `${objectLabel} [${repName}]`;
+  }
+  return objectLabel;
+}
+
+function getPrimitiveFocusPoint(hit) {
+  if (!sceneData) {
+    throw new Error("No scene is available for primitive focus point lookup.");
+  }
+  if (hit.primType === PRIM_SPHERE) {
+    const sphere = sceneData.spheres[hit.primIndex];
+    if (!sphere) {
+      throw new Error(`Cannot focus sphere ${hit.primIndex}: primitive is missing.`);
+    }
+    return [sphere.center[0], sphere.center[1], sphere.center[2]];
+  }
+  if (hit.primType === PRIM_CYLINDER) {
+    const cylinder = sceneData.cylinders[hit.primIndex];
+    if (!cylinder) {
+      throw new Error(`Cannot focus cylinder ${hit.primIndex}: primitive is missing.`);
+    }
+    return [
+      (cylinder.p1[0] + cylinder.p2[0]) * 0.5,
+      (cylinder.p1[1] + cylinder.p2[1]) * 0.5,
+      (cylinder.p1[2] + cylinder.p2[2]) * 0.5
+    ];
+  }
+  if (hit.primType === PRIM_TRIANGLE) {
+    const tri = sceneData.tris[hit.primIndex];
+    if (!tri) {
+      throw new Error(`Cannot focus triangle ${hit.primIndex}: primitive is missing.`);
+    }
+    const i0 = tri[0] * 3;
+    const i1 = tri[1] * 3;
+    const i2 = tri[2] * 3;
+    return [
+      (sceneData.positions[i0] + sceneData.positions[i1] + sceneData.positions[i2]) / 3,
+      (sceneData.positions[i0 + 1] + sceneData.positions[i1 + 1] + sceneData.positions[i2 + 1]) / 3,
+      (sceneData.positions[i0 + 2] + sceneData.positions[i1 + 2] + sceneData.positions[i2 + 2]) / 3
+    ];
+  }
+  throw new Error(`Unknown primitive type ${hit.primType} for focus point lookup.`);
+}
+
 function updateHoverBoxOverlay(camera = null) {
-  if (!hoverBoxOverlay || !canvas) return;
+  if ((!hoverBoxOverlay && !hoverInfoOverlay) || !canvas) return;
   if (!sceneData || !pointerState.overCanvas) {
     hideHoverBoxOverlay();
+    hideHoverInfoOverlay();
     return;
   }
 
@@ -1444,6 +1838,7 @@ function updateHoverBoxOverlay(camera = null) {
   const hit = tracePointerHit(activeCamera);
   if (!hit) {
     hideHoverBoxOverlay();
+    hideHoverInfoOverlay();
     return;
   }
 
@@ -1453,9 +1848,16 @@ function updateHoverBoxOverlay(camera = null) {
   const box = projectAabbToCanvasRect(bounds, activeCamera, canvasWidth, canvasHeight);
   if (!box) {
     hideHoverBoxOverlay();
+    hideHoverInfoOverlay();
     return;
   }
   drawHoverBoxOverlay(box);
+  const hoverLabel = getHoverLabelForHit(hit);
+  if (hoverLabel) {
+    drawHoverInfoOverlay(hoverLabel);
+  } else {
+    hideHoverInfoOverlay();
+  }
 }
 
 function safeUpdateHoverBoxOverlay(camera = null) {
@@ -1464,12 +1866,42 @@ function safeUpdateHoverBoxOverlay(camera = null) {
     hoverOverlayErrorMessage = null;
   } catch (err) {
     hideHoverBoxOverlay();
+    hideHoverInfoOverlay();
     const msg = err?.message || String(err);
     if (hoverOverlayErrorMessage !== msg) {
       hoverOverlayErrorMessage = msg;
       logger.warn(`[hover] ${msg}`);
     }
   }
+}
+
+function centerOrbitFromMouseRay() {
+  if (!sceneData) {
+    logger.warn("Orbit center not updated: no scene is loaded.");
+    return;
+  }
+  if (!pointerState.overCanvas) {
+    logger.info("Orbit center not updated: mouse is not over the render canvas.");
+    return;
+  }
+
+  const camera = computeCameraVectors();
+  const hit = tracePointerHit(camera);
+  if (!hit) {
+    logger.info("Orbit center not updated: no object found under mouse.");
+    return;
+  }
+
+  const focusPoint = getPrimitiveFocusPoint(hit);
+  cameraState.target = [focusPoint[0], focusPoint[1], focusPoint[2]];
+  renderState.cameraDirty = true;
+  resetAccumulation();
+
+  const hoverLabel = getHoverLabelForHit(hit) || `${primTypeLabel(hit.primType)} ${hit.primIndex}`;
+  logger.info(
+    `[focus] Orbit center updated to ${focusPoint[0].toFixed(2)}, ${focusPoint[1].toFixed(2)}, ${focusPoint[2].toFixed(2)} (${hoverLabel})`
+  );
+  safeUpdateHoverBoxOverlay(computeCameraVectors());
 }
 
 function autofocusFromMouseRay() {
@@ -1553,16 +1985,48 @@ function ensureWebGL() {
 }
 
 function uploadSceneTextures(gl, maxTextureSize) {
+  if (!Array.isArray(sceneData.materials) || sceneData.materials.length === 0) {
+    throw new Error("Scene material table is missing.");
+  }
+  if (!sceneData.triMaterialIndices || sceneData.triMaterialIndices.length !== sceneData.triCount) {
+    throw new Error(
+      `Triangle material index buffer mismatch: expected ${sceneData.triCount}, got ${sceneData.triMaterialIndices?.length ?? "null"}.`
+    );
+  }
+  if (!sceneData.sphereMaterialIndices || sceneData.sphereMaterialIndices.length !== sceneData.sphereCount) {
+    throw new Error(
+      `Sphere material index buffer mismatch: expected ${sceneData.sphereCount}, got ${sceneData.sphereMaterialIndices?.length ?? "null"}.`
+    );
+  }
+  if (!sceneData.cylinderMaterialIndices || sceneData.cylinderMaterialIndices.length !== sceneData.cylinderCount) {
+    throw new Error(
+      `Cylinder material index buffer mismatch: expected ${sceneData.cylinderCount}, got ${sceneData.cylinderMaterialIndices?.length ?? "null"}.`
+    );
+  }
+
   const bvh = packBvhNodes(sceneData.nodes, maxTextureSize);
   const tris = packTriangles(sceneData.tris, sceneData.positions, maxTextureSize);
   const triNormals = packTriNormals(sceneData.tris, sceneData.normals, maxTextureSize);
-  const triColors = packTriColors(sceneData.triColors, maxTextureSize);
+  const triColors = packTriColorsWithMaterialIndices(
+    sceneData.triColors,
+    sceneData.triMaterialIndices,
+    maxTextureSize
+  );
   const triFlags = packTriFlags(sceneData.triFlags || new Float32Array(0), maxTextureSize);
   const primIndices = packPrimIndices(sceneData.primIndexBuffer, maxTextureSize);
   const spheresPacked = packSpheres(sceneData.spheres, maxTextureSize);
-  const sphereColors = packSphereColors(sceneData.spheres, maxTextureSize);
+  const sphereColors = packSphereColorsWithMaterialIndices(
+    sceneData.spheres,
+    sceneData.sphereMaterialIndices,
+    maxTextureSize
+  );
   const cylindersPacked = packCylinders(sceneData.cylinders, maxTextureSize);
-  const cylinderColors = packCylinderColors(sceneData.cylinders, maxTextureSize);
+  const cylinderColors = packCylinderColorsWithMaterialIndices(
+    sceneData.cylinders,
+    sceneData.cylinderMaterialIndices,
+    maxTextureSize
+  );
+  const materialTable = packMaterialTable(sceneData.materials, maxTextureSize);
 
   const bvhTex = createDataTexture(gl, bvh.width, bvh.height, bvh.data);
   const triTex = createDataTexture(gl, tris.width, tris.height, tris.data);
@@ -1574,6 +2038,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
   const sphereColorTex = createDataTexture(gl, sphereColors.width, sphereColors.height, sphereColors.data);
   const cylinderTex = createDataTexture(gl, cylindersPacked.width, cylindersPacked.height, cylindersPacked.data);
   const cylinderColorTex = createDataTexture(gl, cylinderColors.width, cylinderColors.height, cylinderColors.data);
+  const materialTex = createDataTexture(gl, materialTable.width, materialTable.height, materialTable.data);
 
   return {
     bvh,
@@ -1586,6 +2051,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
     sphereColors,
     cylindersPacked,
     cylinderColors,
+    materialTable,
     bvhTex,
     triTex,
     triNormalTex,
@@ -1596,6 +2062,7 @@ function uploadSceneTextures(gl, maxTextureSize) {
     sphereColorTex,
     cylinderTex,
     cylinderColorTex,
+    materialTex,
   };
 }
 
@@ -1617,11 +2084,6 @@ function renderFrame() {
     return;
   }
 
-  if (!loggedFirstFrame) {
-    logger.info(`Rendering ${renderWidth}x${renderHeight} (scale ${scale.toFixed(2)}x)`);
-    loggedFirstFrame = true;
-  }
-
   canvas.width = displayWidth;
   canvas.height = displayHeight;
   cameraState.width = renderWidth;
@@ -1629,7 +2091,6 @@ function renderFrame() {
 
   if (!glState.textures) {
     const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    logger.info(`Uploading textures (MAX_TEXTURE_SIZE ${maxTextureSize})`);
     glState.textures = uploadSceneTextures(gl, maxTextureSize);
   }
 
@@ -1677,7 +2138,6 @@ function renderFrame() {
   }
 
   if (!glState.accum) {
-    logger.info("Allocating accumulation targets");
     glState.accum = createAccumTargets(gl, renderWidth, renderHeight);
     renderState.frameIndex = 0;
   } else {
@@ -1728,6 +2188,7 @@ function renderFrame() {
   createTextureUnit(gl, glState.textures.cylinderColorTex, 12);
   createTextureUnit3D(gl, glState.volumeTex || glState.dummyVolumeTex, 13);
   createTextureUnit(gl, glState.textures.triFlagTex, 14);
+  createTextureUnit(gl, glState.textures.materialTex, 15);
 
 setTraceUniforms(gl, traceProgram, {
     bvhUnit: 0,
@@ -1743,6 +2204,7 @@ setTraceUniforms(gl, traceProgram, {
     cylinderUnit: 11,
     cylinderColorUnit: 12,
     volumeUnit: 13,
+    materialUnit: 15,
     camOrigin: camera.origin,
     camRight: camera.right,
     camUp: camera.up,
@@ -1753,14 +2215,18 @@ setTraceUniforms(gl, traceProgram, {
     triNormalTexSize: [glState.textures.triNormals.width, glState.textures.triNormals.height],
     triColorTexSize: [glState.textures.triColors.width, glState.textures.triColors.height],
     triFlagTexSize: [glState.textures.triFlags.width, glState.textures.triFlags.height],
+    materialTexSize: [glState.textures.materialTable.width, glState.textures.materialTable.height],
     primIndexTexSize: [glState.textures.primIndices.width, glState.textures.primIndices.height],
     sphereTexSize: [glState.textures.spheresPacked.width, glState.textures.spheresPacked.height],
+    sphereColorTexSize: [glState.textures.sphereColors.width, glState.textures.sphereColors.height],
     cylinderTexSize: [glState.textures.cylindersPacked.width, glState.textures.cylindersPacked.height],
+    cylinderColorTexSize: [glState.textures.cylinderColors.width, glState.textures.cylinderColors.height],
     envTexSize: glState.envSize || [1, 1],
     frameIndex: renderState.frameIndex,
     triCount: sceneData.triCount,
     sphereCount: sceneData.sphereCount,
     cylinderCount: sceneData.cylinderCount,
+    materialCount: sceneData.materials.length,
     volumeEnabled,
     volumeMin,
     volumeMax,
@@ -2025,6 +2491,7 @@ canvasContainer?.addEventListener("contextmenu", (event) => {
 canvas.addEventListener("mouseleave", () => {
   pointerState.overCanvas = false;
   hideHoverBoxOverlay();
+  hideHoverInfoOverlay();
   inputState.dragging = false;
   inputState.rotateAxisLock = null;
 });
@@ -2100,9 +2567,20 @@ canvas.addEventListener("wheel", (event) => {
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
   const isFocusShortcut = event.code === "KeyF" || key === "f";
+  const isCenterShortcut = event.code === "KeyC" || key === "c";
   if (isFocusShortcut && !event.repeat && !isTextEntryTarget(event.target)) {
     try {
       autofocusFromMouseRay();
+    } catch (err) {
+      const msg = err?.message || String(err);
+      logger.error(msg);
+    }
+    event.preventDefault();
+    return;
+  }
+  if (isCenterShortcut && !event.repeat && !isTextEntryTarget(event.target)) {
+    try {
+      centerOrbitFromMouseRay();
     } catch (err) {
       const msg = err?.message || String(err);
       logger.error(msg);
@@ -2187,56 +2665,17 @@ tabButtons.forEach((button) => {
   });
 });
 
-useImportedColorToggle.addEventListener("change", updateMaterialState);
 clipEnableToggle?.addEventListener("change", () => updateClipState({ preserveLock: true }));
 clipDistanceInput?.addEventListener("input", () => updateClipState({ preserveLock: true }));
 clipLockToggle?.addEventListener("change", () => updateClipState({ preserveLock: false }));
-surfaceEnableToggle?.addEventListener("change", () => {
-  if (!lastMolContext || !lastMolContext.molData) return;
-  loadMolecularGeometry(
-    lastMolContext.spheres,
-    lastMolContext.cylinders,
-    lastMolContext.molData,
-    lastMolContext.options,
-    lastMolContext.volumeData,
-    lastMolContext.surfaceAtomMode
-  ).catch((err) => logger.error(err.message || String(err)));
-});
 materialSelect?.addEventListener("change", () => {
   applyMaterialPreset(materialSelect.value);
   updateMaterialVisibility();
-  updateMaterialState();
-  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
 });
-baseColorInput.addEventListener("input", updateMaterialState);
-metallicInput.addEventListener("input", updateMaterialState);
-roughnessInput.addEventListener("input", updateMaterialState);
-rimBoostInput?.addEventListener("input", updateMaterialState);
-matteSpecularInput?.addEventListener("input", updateMaterialState);
-matteRoughnessInput?.addEventListener("input", updateMaterialState);
-matteDiffuseRoughnessInput?.addEventListener("input", updateMaterialState);
-wrapDiffuseInput?.addEventListener("input", updateMaterialState);
-surfaceShowAtomsToggle?.addEventListener("change", () => {
-  updateMaterialState();
-  refreshSurfaceAtomMode().catch((err) => logger.error(err.message || String(err)));
+pdbDisplayStyle?.addEventListener("change", updateDisplayControlsVisibility);
+representationActionBtn?.addEventListener("click", () => {
+  applyRepresentationActionFromSelection().then(() => startRenderLoop()).catch((err) => logger.error(err.message || String(err)));
 });
-surfaceIorInput?.addEventListener("input", updateMaterialState);
-surfaceTransmissionInput?.addEventListener("input", updateMaterialState);
-showSheetHbondsToggle?.addEventListener("change", () => {
-  if (!lastMolContext || !lastMolContext.molData) {
-    logger.error("No molecular data loaded for sheet H-bond debug rendering.");
-    return;
-  }
-  loadMolecularGeometry(
-    lastMolContext.spheres,
-    lastMolContext.cylinders,
-    lastMolContext.molData,
-    lastMolContext.options,
-    lastMolContext.volumeData,
-    lastMolContext.surfaceAtomMode
-  ).catch((err) => logger.error(err.message || String(err)));
-});
-surfaceOpacityInput?.addEventListener("input", updateMaterialState);
 maxBouncesInput.addEventListener("input", updateMaterialState);
 exposureInput.addEventListener("input", updateMaterialState);
 dofEnableToggle?.addEventListener("change", () => {
@@ -2341,12 +2780,14 @@ loadEnvManifest().then(() => {
 
   updateMaterialState();
   updateMaterialVisibility();
+  updateDisplayControlsVisibility();
   updateDofVisibility();
   updateEnvironmentVisibility();
   updateClipState({ preserveLock: true });
   updateRenderLimits();
   updateLightState();
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+  renderSceneGraphTree();
 });
 
 setActiveTab("scene");

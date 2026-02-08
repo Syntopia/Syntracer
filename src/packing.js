@@ -121,13 +121,45 @@ export function packTriNormals(tris, normals, maxTextureSize) {
 }
 
 export function packTriColors(triColors, maxTextureSize) {
-  const triCount = Math.max(1, triColors.length / 3);
+  const triCount = triColors.length / 3;
+  if (!Number.isInteger(triCount)) {
+    throw new Error(`Triangle color array length must be divisible by 3, got ${triColors.length}.`);
+  }
+  const texelCount = Math.max(1, triCount);
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+  for (let i = 0; i < triCount; i += 1) {
+    const base = i * 3;
+    writeTexel(data, i, [triColors[base], triColors[base + 1], triColors[base + 2], 0]);
+  }
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    texelsPerTri: 1
+  };
+}
+
+export function packTriColorsWithMaterialIndices(triColors, triMaterialIndices, maxTextureSize) {
+  const triCount = triColors.length / 3;
+  if (!Number.isInteger(triCount)) {
+    throw new Error(`Triangle color array length must be divisible by 3, got ${triColors.length}.`);
+  }
+  if (!triMaterialIndices || triMaterialIndices.length !== triCount) {
+    throw new Error(
+      `Triangle material index length mismatch: expected ${triCount}, got ${triMaterialIndices?.length ?? "null"}.`
+    );
+  }
   const texelCount = triCount;
   const layout = computeTextureLayout(texelCount, maxTextureSize);
   const data = new Float32Array(layout.width * layout.height * 4);
-  for (let i = 0; i < triColors.length / 3; i += 1) {
+  for (let i = 0; i < triCount; i += 1) {
     const base = i * 3;
-    writeTexel(data, i, [triColors[base], triColors[base + 1], triColors[base + 2], 1]);
+    const materialIndex = Number(triMaterialIndices[i]);
+    if (!Number.isFinite(materialIndex)) {
+      throw new Error(`Triangle material index at ${i} must be finite.`);
+    }
+    writeTexel(data, i, [triColors[base], triColors[base + 1], triColors[base + 2], materialIndex]);
   }
   return {
     data,
@@ -224,6 +256,34 @@ export function packSphereColors(spheres, maxTextureSize) {
   };
 }
 
+export function packSphereColorsWithMaterialIndices(spheres, sphereMaterialIndices, maxTextureSize) {
+  if (!sphereMaterialIndices || sphereMaterialIndices.length !== spheres.length) {
+    throw new Error(
+      `Sphere material index length mismatch: expected ${spheres.length}, got ${sphereMaterialIndices?.length ?? "null"}.`
+    );
+  }
+  const texelCount = Math.max(1, spheres.length);
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+
+  for (let i = 0; i < spheres.length; i += 1) {
+    const s = spheres[i];
+    const c = s.color || [0.8, 0.8, 0.8];
+    const materialIndex = Number(sphereMaterialIndices[i]);
+    if (!Number.isFinite(materialIndex)) {
+      throw new Error(`Sphere material index at ${i} must be finite.`);
+    }
+    writeTexel(data, i, [c[0], c[1], c[2], materialIndex]);
+  }
+
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    count: spheres.length
+  };
+}
+
 /**
  * Pack cylinders into a texture
  * Each cylinder uses 2 texels:
@@ -272,6 +332,107 @@ export function packCylinderColors(cylinders, maxTextureSize) {
     width: layout.width,
     height: layout.height,
     count: cylinders.length
+  };
+}
+
+export function packCylinderColorsWithMaterialIndices(cylinders, cylinderMaterialIndices, maxTextureSize) {
+  if (!cylinderMaterialIndices || cylinderMaterialIndices.length !== cylinders.length) {
+    throw new Error(
+      `Cylinder material index length mismatch: expected ${cylinders.length}, got ${cylinderMaterialIndices?.length ?? "null"}.`
+    );
+  }
+  const texelCount = Math.max(1, cylinders.length);
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+
+  for (let i = 0; i < cylinders.length; i += 1) {
+    const c = cylinders[i];
+    const col = c.color || [0.8, 0.8, 0.8];
+    const materialIndex = Number(cylinderMaterialIndices[i]);
+    if (!Number.isFinite(materialIndex)) {
+      throw new Error(`Cylinder material index at ${i} must be finite.`);
+    }
+    writeTexel(data, i, [col[0], col[1], col[2], materialIndex]);
+  }
+
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    count: cylinders.length
+  };
+}
+
+function mapMaterialMode(mode) {
+  if (mode === "matte") return 1;
+  if (mode === "surface-glass") return 2;
+  if (mode === "translucent-plastic") return 3;
+  return 0;
+}
+
+function asFiniteNumber(value, label) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    throw new Error(`${label} must be finite.`);
+  }
+  return num;
+}
+
+function asRgb(value, label) {
+  if (!Array.isArray(value) || value.length !== 3) {
+    throw new Error(`${label} must be an RGB array with 3 components.`);
+  }
+  return [
+    asFiniteNumber(value[0], `${label}[0]`),
+    asFiniteNumber(value[1], `${label}[1]`),
+    asFiniteNumber(value[2], `${label}[2]`)
+  ];
+}
+
+export function packMaterialTable(materials, maxTextureSize) {
+  if (!Array.isArray(materials) || materials.length === 0) {
+    throw new Error("Material table must contain at least one material.");
+  }
+  const texelsPerMaterial = 4;
+  const texelCount = materials.length * texelsPerMaterial;
+  const layout = computeTextureLayout(texelCount, maxTextureSize);
+  const data = new Float32Array(layout.width * layout.height * 4);
+
+  for (let i = 0; i < materials.length; i += 1) {
+    const material = materials[i];
+    if (!material || typeof material !== "object") {
+      throw new Error(`Material ${i} is invalid.`);
+    }
+    const baseColor = asRgb(material.baseColor, `materials[${i}].baseColor`);
+    const mode = mapMaterialMode(material.mode);
+    const metallic = asFiniteNumber(material.metallic, `materials[${i}].metallic`);
+    const roughness = asFiniteNumber(material.roughness, `materials[${i}].roughness`);
+    const rimBoost = asFiniteNumber(material.rimBoost, `materials[${i}].rimBoost`);
+    const matteSpecular = asFiniteNumber(material.matteSpecular, `materials[${i}].matteSpecular`);
+    const matteRoughness = asFiniteNumber(material.matteRoughness, `materials[${i}].matteRoughness`);
+    const matteDiffuseRoughness = asFiniteNumber(
+      material.matteDiffuseRoughness,
+      `materials[${i}].matteDiffuseRoughness`
+    );
+    const wrapDiffuse = asFiniteNumber(material.wrapDiffuse, `materials[${i}].wrapDiffuse`);
+    const surfaceIor = asFiniteNumber(material.surfaceIor, `materials[${i}].surfaceIor`);
+    const surfaceTransmission = asFiniteNumber(material.surfaceTransmission, `materials[${i}].surfaceTransmission`);
+    const surfaceOpacity = asFiniteNumber(material.surfaceOpacity, `materials[${i}].surfaceOpacity`);
+    const useImportedColor = material.useImportedColor === false ? 0 : 1;
+
+    const base = i * texelsPerMaterial;
+    writeTexel(data, base + 0, [mode, metallic, roughness, rimBoost]);
+    writeTexel(data, base + 1, [matteSpecular, matteRoughness, matteDiffuseRoughness, wrapDiffuse]);
+    writeTexel(data, base + 2, [surfaceIor, surfaceTransmission, surfaceOpacity, useImportedColor]);
+    writeTexel(data, base + 3, [baseColor[0], baseColor[1], baseColor[2], 0]);
+  }
+
+  return {
+    data,
+    width: layout.width,
+    height: layout.height,
+    count: materials.length,
+    texelsPerMaterial
   };
 }
 

@@ -38,6 +38,7 @@ uniform sampler2D uSphereTex;
 uniform sampler2D uSphereColorTex;
 uniform sampler2D uCylinderTex;
 uniform sampler2D uCylinderColorTex;
+uniform sampler2D uMaterialTex;
 uniform sampler3D uVolumeTex;
 uniform sampler2D uAccumTex;
 uniform sampler2D uEnvTex;
@@ -53,11 +54,15 @@ uniform vec2 uTriColorTexSize;
 uniform vec2 uTriFlagTexSize;
 uniform vec2 uPrimIndexTexSize;
 uniform vec2 uSphereTexSize;
+uniform vec2 uSphereColorTexSize;
 uniform vec2 uCylinderTexSize;
+uniform vec2 uCylinderColorTexSize;
+uniform vec2 uMaterialTexSize;
 uniform int uFrameIndex;
 uniform int uTriCount;
 uniform int uSphereCount;
 uniform int uCylinderCount;
+uniform int uMaterialCount;
 uniform int uVolumeEnabled;
 uniform vec3 uVolumeMin;
 uniform vec3 uVolumeMax;
@@ -151,6 +156,72 @@ vec3 fetchTriColor(int triIndex) {
 
 float fetchTriFlag(int triIndex) {
   return fetchTexel(uTriFlagTex, triIndex, ivec2(uTriFlagTexSize)).r;
+}
+
+int fetchTriMaterialIndex(int triIndex) {
+  return int(fetchTexel(uTriColorTex, triIndex, ivec2(uTriColorTexSize)).a + 0.5);
+}
+
+int fetchSphereMaterialIndex(int sphereIndex) {
+  return int(fetchTexel(uSphereColorTex, sphereIndex, ivec2(uSphereColorTexSize)).a + 0.5);
+}
+
+int fetchCylinderMaterialIndex(int cylinderIndex) {
+  return int(fetchTexel(uCylinderColorTex, cylinderIndex, ivec2(uCylinderColorTexSize)).a + 0.5);
+}
+
+int fetchPrimitiveMaterialIndex(int primType, int primIndex) {
+  if (primType == PRIM_TRIANGLE) {
+    return fetchTriMaterialIndex(primIndex);
+  }
+  if (primType == PRIM_SPHERE) {
+    return fetchSphereMaterialIndex(primIndex);
+  }
+  if (primType == PRIM_CYLINDER) {
+    return fetchCylinderMaterialIndex(primIndex);
+  }
+  return 0;
+}
+
+struct MaterialData {
+  int mode;
+  float metallic;
+  float roughness;
+  float rimBoost;
+  float matteSpecular;
+  float matteRoughness;
+  float matteDiffuseRoughness;
+  float wrapDiffuse;
+  float surfaceIor;
+  float surfaceTransmission;
+  float surfaceOpacity;
+  float useImportedColor;
+  vec3 baseColor;
+};
+
+MaterialData fetchMaterialData(int materialIndex) {
+  int safeCount = max(uMaterialCount, 1);
+  int idx = clamp(materialIndex, 0, safeCount - 1);
+  int base = idx * 4;
+  vec4 p0 = fetchTexel(uMaterialTex, base + 0, ivec2(uMaterialTexSize));
+  vec4 p1 = fetchTexel(uMaterialTex, base + 1, ivec2(uMaterialTexSize));
+  vec4 p2 = fetchTexel(uMaterialTex, base + 2, ivec2(uMaterialTexSize));
+  vec4 p3 = fetchTexel(uMaterialTex, base + 3, ivec2(uMaterialTexSize));
+  MaterialData m;
+  m.mode = int(p0.x + 0.5);
+  m.metallic = p0.y;
+  m.roughness = p0.z;
+  m.rimBoost = p0.w;
+  m.matteSpecular = p1.x;
+  m.matteRoughness = p1.y;
+  m.matteDiffuseRoughness = p1.z;
+  m.wrapDiffuse = p1.w;
+  m.surfaceIor = p2.x;
+  m.surfaceTransmission = p2.y;
+  m.surfaceOpacity = p2.z;
+  m.useImportedColor = p2.w;
+  m.baseColor = p3.rgb;
+  return m;
 }
 
 void fetchTriVerts(int triIndex, out vec3 v0, out vec3 v1, out vec3 v2) {
@@ -397,7 +468,7 @@ vec4 fetchSphere(int sphereIndex) {
 }
 
 vec3 fetchSphereColor(int sphereIndex) {
-  return fetchTexel(uSphereColorTex, sphereIndex, ivec2(uSphereTexSize)).rgb;
+  return fetchTexel(uSphereColorTex, sphereIndex, ivec2(uSphereColorTexSize)).rgb;
 }
 
 // Fetch cylinder data: p1 + radius in texel 0, p2 in texel 1
@@ -411,7 +482,7 @@ void fetchCylinder(int cylIndex, out vec3 p1, out vec3 p2, out float radius) {
 }
 
 vec3 fetchCylinderColor(int cylIndex) {
-  return fetchTexel(uCylinderColorTex, cylIndex, ivec2(uCylinderTexSize)).rgb;
+  return fetchTexel(uCylinderColorTex, cylIndex, ivec2(uCylinderColorTexSize)).rgb;
 }
 
 float sampleVolume(vec3 pos) {
@@ -553,7 +624,22 @@ void decodePrimIndex(float encoded, out int primType, out int primIndex) {
 // For spheres: extra = 0, 0
 // For cylinders: extra = hitType, 0
 
-bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, out int outPrimIndex, out vec3 outExtra, out int outTraversalCost) {
+bool isSurfaceMaterialHit(int primType, int primIndex) {
+  int materialIndex = fetchPrimitiveMaterialIndex(primType, primIndex);
+  MaterialData material = fetchMaterialData(materialIndex);
+  return material.mode == 2 || material.mode == 3;
+}
+
+bool traceClosest(
+  vec3 origin,
+  vec3 dir,
+  out float outT,
+  out int outPrimType,
+  out int outPrimIndex,
+  out vec3 outExtra,
+  out int outTraversalCost,
+  bool ignoreSurfaceHits
+) {
   float closest = 1e20;
   int hitPrimType = -1;
   int hitPrimIndex = -1;
@@ -571,6 +657,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
       vec3 v2 = fetchTexel(uTriTex, triBase + 2, ivec2(uTriTexSize)).xyz;
       vec4 hit = intersectTri(origin, dir, v0, v1, v2);
       if (hit.x > 0.0 && hit.x < closest) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_TRIANGLE, i)) {
+          continue;
+        }
         closest = hit.x;
         hitPrimType = PRIM_TRIANGLE;
         hitPrimIndex = i;
@@ -583,6 +672,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
       vec4 s = fetchSphere(i);
       vec2 hit = intersectSphere(origin, dir, s.xyz, s.w);
       if (hit.x > 0.0 && hit.x < closest) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_SPHERE, i)) {
+          continue;
+        }
         closest = hit.x;
         hitPrimType = PRIM_SPHERE;
         hitPrimIndex = i;
@@ -596,6 +688,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
       fetchCylinder(i, p1, p2, radius);
       vec2 hit = intersectCylinder(origin, dir, p1, p2, radius);
       if (hit.x > 0.0 && hit.x < closest) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_CYLINDER, i)) {
+          continue;
+        }
         closest = hit.x;
         hitPrimType = PRIM_CYLINDER;
         hitPrimIndex = i;
@@ -645,6 +740,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
             vec3 v2 = fetchTexel(uTriTex, triBase + 2, ivec2(uTriTexSize)).xyz;
             vec4 hit = intersectTri(origin, dir, v0, v1, v2);
             if (hit.x > 0.0 && hit.x < closest) {
+              if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_TRIANGLE, primIndex)) {
+                continue;
+              }
               closest = hit.x;
               hitPrimType = PRIM_TRIANGLE;
               hitPrimIndex = primIndex;
@@ -654,6 +752,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
             vec4 s = fetchSphere(primIndex);
             vec2 hit = intersectSphere(origin, dir, s.xyz, s.w);
             if (hit.x > 0.0 && hit.x < closest) {
+              if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_SPHERE, primIndex)) {
+                continue;
+              }
               closest = hit.x;
               hitPrimType = PRIM_SPHERE;
               hitPrimIndex = primIndex;
@@ -664,6 +765,9 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
             fetchCylinder(primIndex, p1, p2, radius);
             vec2 hit = intersectCylinder(origin, dir, p1, p2, radius);
             if (hit.x > 0.0 && hit.x < closest) {
+              if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_CYLINDER, primIndex)) {
+                continue;
+              }
               closest = hit.x;
               hitPrimType = PRIM_CYLINDER;
               hitPrimIndex = primIndex;
@@ -694,7 +798,7 @@ bool traceClosest(vec3 origin, vec3 dir, out float outT, out int outPrimType, ou
   return hitPrimType >= 0;
 }
 
-bool traceAny(vec3 origin, vec3 dir, float tMax) {
+bool traceAny(vec3 origin, vec3 dir, float tMax, bool ignoreSurfaceHits) {
   if (uUseBvh == 0) {
     // Brute force: test all primitives
     for (int i = 0; i < ${MAX_BRUTE_FORCE_TRIS}; i += 1) {
@@ -704,20 +808,35 @@ bool traceAny(vec3 origin, vec3 dir, float tMax) {
       vec3 v1 = fetchTexel(uTriTex, triBase + 1, ivec2(uTriTexSize)).xyz;
       vec3 v2 = fetchTexel(uTriTex, triBase + 2, ivec2(uTriTexSize)).xyz;
       vec4 hit = intersectTri(origin, dir, v0, v1, v2);
-      if (hit.x > 0.0 && hit.x < tMax) return true;
+      if (hit.x > 0.0 && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_TRIANGLE, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     for (int i = 0; i < 1024; i += 1) {
       if (i >= uSphereCount) break;
       vec4 s = fetchSphere(i);
       vec2 hit = intersectSphere(origin, dir, s.xyz, s.w);
-      if (hit.x > 0.0 && hit.x < tMax) return true;
+      if (hit.x > 0.0 && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_SPHERE, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     for (int i = 0; i < 1024; i += 1) {
       if (i >= uCylinderCount) break;
       vec3 p1, p2; float radius;
       fetchCylinder(i, p1, p2, radius);
       vec2 hit = intersectCylinder(origin, dir, p1, p2, radius);
-      if (hit.x > 0.0 && hit.x < tMax) return true;
+      if (hit.x > 0.0 && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_CYLINDER, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     return false;
   }
@@ -772,7 +891,12 @@ bool traceAny(vec3 origin, vec3 dir, float tMax) {
           fetchCylinder(primIndex, p1, p2, radius);
           hitT = intersectCylinder(origin, dir, p1, p2, radius).x;
         }
-        if (hitT > 0.0 && hitT < tMax) return true;
+        if (hitT > 0.0 && hitT < tMax) {
+          if (ignoreSurfaceHits && isSurfaceMaterialHit(primType, primIndex)) {
+            continue;
+          }
+          return true;
+        }
       }
     } else {
       int left = int(leftFirst + 0.5);
@@ -784,7 +908,7 @@ bool traceAny(vec3 origin, vec3 dir, float tMax) {
   return false;
 }
 
-bool traceAnyMin(vec3 origin, vec3 dir, float tMax, float tMin) {
+bool traceAnyMin(vec3 origin, vec3 dir, float tMax, float tMin, bool ignoreSurfaceHits) {
   if (uUseBvh == 0) {
     for (int i = 0; i < ${MAX_BRUTE_FORCE_TRIS}; i += 1) {
       if (i >= uTriCount) break;
@@ -793,20 +917,35 @@ bool traceAnyMin(vec3 origin, vec3 dir, float tMax, float tMin) {
       vec3 v1 = fetchTexel(uTriTex, triBase + 1, ivec2(uTriTexSize)).xyz;
       vec3 v2 = fetchTexel(uTriTex, triBase + 2, ivec2(uTriTexSize)).xyz;
       vec4 hit = intersectTri(origin, dir, v0, v1, v2);
-      if (hit.x > tMin && hit.x < tMax) return true;
+      if (hit.x > tMin && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_TRIANGLE, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     for (int i = 0; i < 1024; i += 1) {
       if (i >= uSphereCount) break;
       vec4 s = fetchSphere(i);
       vec2 hit = intersectSphere(origin, dir, s.xyz, s.w);
-      if (hit.x > tMin && hit.x < tMax) return true;
+      if (hit.x > tMin && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_SPHERE, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     for (int i = 0; i < 1024; i += 1) {
       if (i >= uCylinderCount) break;
       vec3 p1, p2; float radius;
       fetchCylinder(i, p1, p2, radius);
       vec2 hit = intersectCylinder(origin, dir, p1, p2, radius);
-      if (hit.x > tMin && hit.x < tMax) return true;
+      if (hit.x > tMin && hit.x < tMax) {
+        if (ignoreSurfaceHits && isSurfaceMaterialHit(PRIM_CYLINDER, i)) {
+          continue;
+        }
+        return true;
+      }
     }
     return false;
   }
@@ -860,6 +999,9 @@ bool traceAnyMin(vec3 origin, vec3 dir, float tMax, float tMin) {
           hitT = intersectCylinder(origin, dir, p1, p2, radius).x;
         }
         if (hitT > tMin && hitT < tMax) {
+          if (ignoreSurfaceHits && isSurfaceMaterialHit(primType, primIndex)) {
+            continue;
+          }
           return true;
         }
       }
@@ -1091,15 +1233,22 @@ float geometrySmith(float NdotV, float NdotL, float roughness) {
   return ggx1 * ggx2;
 }
 
-vec3 shadeDirect(vec3 hitPos, vec3 shadingNormal, vec3 geomNormal, vec3 baseColor, vec3 V, inout uint seed) {
+vec3 shadeDirect(
+  vec3 hitPos,
+  vec3 shadingNormal,
+  vec3 geomNormal,
+  vec3 baseColor,
+  vec3 V,
+  float metallic,
+  float rough,
+  float diffRough,
+  float wrap,
+  vec3 F0,
+  inout uint seed,
+  bool ignoreSurfaceShadowHits
+) {
   vec3 direct = vec3(0.0);
   float bias = max(uRayBias, 1e-4);
-  bool useMatte = uMaterialMode == 1;
-  float metallic = uMaterialMode == 0 ? uMetallic : 0.0;
-  float rough = useMatte ? uMatteRoughness : uRoughness;
-  float diffRough = useMatte ? uMatteDiffuseRoughness : 0.0;
-  float wrap = useMatte ? uWrapDiffuse : 0.0;
-  vec3 F0 = useMatte ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
   for (int i = 0; i < 3; i += 1) {
     if (uLightEnabled[i] == 0) {
       continue;
@@ -1113,7 +1262,7 @@ vec3 shadeDirect(vec3 hitPos, vec3 shadingNormal, vec3 geomNormal, vec3 baseColo
     }
     if (uCastShadows == 1) {
       float tmin = max(bias, uTMin);
-      bool occluded = traceAnyMin(hitPos + geomNormal * bias, lightDir, 1e20, tmin);
+      bool occluded = traceAnyMin(hitPos + geomNormal * bias, lightDir, 1e20, tmin, ignoreSurfaceShadowHits);
       if (occluded) {
         continue;
       }
@@ -1175,6 +1324,7 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
   vec3 throughput = vec3(1.0);
   float bias = max(uRayBias, 1e-4);
   float lastBrdfPdf = 0.0; // Track BRDF PDF for MIS when hitting environment
+  bool ignoreSurfaceTraversalHits = false;
 
   for (int bounce = 0; bounce < 8; bounce += 1) {
     if (bounce >= uMaxBounces) {
@@ -1185,7 +1335,16 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     int primIndex;
     vec3 extra;
     int dummyCost;
-    bool hit = traceClosest(origin, dir, t, primType, primIndex, extra, dummyCost);
+    bool hit = traceClosest(
+      origin,
+      dir,
+      t,
+      primType,
+      primIndex,
+      extra,
+      dummyCost,
+      ignoreSurfaceTraversalHits
+    );
     float tSurface = hit ? t : 1e20;
 
     if (uVolumeEnabled == 1 && uVolumeMaxSteps > 0 && uVolumeStep > 0.0) {
@@ -1238,8 +1397,11 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     vec3 geomNormalRaw;
     vec3 geomNormal;
     vec3 shadingNormal;
+    vec3 importedColor = vec3(0.8);
     vec3 baseColor;
     bool frontFace = true;
+    int materialIndex = fetchPrimitiveMaterialIndex(primType, primIndex);
+    MaterialData material = fetchMaterialData(materialIndex);
 
     if (primType == PRIM_TRIANGLE) {
       vec3 bary = vec3(1.0 - extra.x - extra.y, extra.x, extra.y);
@@ -1252,14 +1414,14 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
       if (dot(shadingNormal, geomNormal) < 0.0) {
         shadingNormal = -shadingNormal;
       }
-      baseColor = mix(uBaseColor, fetchTriColor(primIndex), float(uUseImportedColor));
+      importedColor = fetchTriColor(primIndex);
     } else if (primType == PRIM_SPHERE) {
       vec4 s = fetchSphere(primIndex);
       geomNormalRaw = normalize(hitPos - s.xyz);
       frontFace = dot(geomNormalRaw, dir) < 0.0;
       geomNormal = frontFace ? geomNormalRaw : -geomNormalRaw;
       shadingNormal = geomNormal;
-      baseColor = mix(uBaseColor, fetchSphereColor(primIndex), float(uUseImportedColor));
+      importedColor = fetchSphereColor(primIndex);
     } else { // PRIM_CYLINDER
       vec3 p1, p2; float radius;
       fetchCylinder(primIndex, p1, p2, radius);
@@ -1268,30 +1430,33 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
       frontFace = dot(geomNormalRaw, dir) < 0.0;
       geomNormal = frontFace ? geomNormalRaw : -geomNormalRaw;
       shadingNormal = geomNormal;
-      baseColor = mix(uBaseColor, fetchCylinderColor(primIndex), float(uUseImportedColor));
+      importedColor = fetchCylinderColor(primIndex);
     }
+    baseColor = mix(material.baseColor, importedColor, clamp(material.useImportedColor, 0.0, 1.0));
 
     vec3 V = normalize(-dir);
+    bool useMatte = material.mode == 1;
+    float metallic = material.mode == 0 ? material.metallic : 0.0;
+    float rough = useMatte ? material.matteRoughness : material.roughness;
+    float diffRough = useMatte ? material.matteDiffuseRoughness : 0.0;
+    float wrap = useMatte ? material.wrapDiffuse : 0.0;
+    vec3 F0 = useMatte ? vec3(material.matteSpecular) : mix(vec3(0.04), baseColor, metallic);
 
-    bool surfaceGlassHit = (
-      uMaterialMode == 2
-      && primType == PRIM_TRIANGLE
-      && (uSurfaceFlagMode == 0 || fetchTriFlag(primIndex) > 0.5)
-    );
-    bool translucentPlasticHit = (uMaterialMode == 3);
+    bool surfaceGlassHit = (material.mode == 2);
+    bool translucentPlasticHit = (material.mode == 3);
     if (surfaceGlassHit || translucentPlasticHit) {
       // Check opacity first - if opaque, fall through to normal surface shading
-      if (rand(seed) >= uSurfaceOpacity) {
+      if (rand(seed) >= material.surfaceOpacity) {
         vec3 N = geomNormal;
         float cosi = clamp(dot(-dir, N), 0.0, 1.0);
-        float f0 = (uSurfaceIor - 1.0) / (uSurfaceIor + 1.0);
+        float f0 = (material.surfaceIor - 1.0) / (material.surfaceIor + 1.0);
         f0 = f0 * f0;
         float F = fresnelSchlickScalar(cosi, f0);
-        float eta = frontFace ? (1.0 / max(uSurfaceIor, 1e-3)) : max(uSurfaceIor, 1e-3);
+        float eta = frontFace ? (1.0 / max(material.surfaceIor, 1e-3)) : max(material.surfaceIor, 1e-3);
         vec3 refrDir;
         bool canRefract = refractDir(dir, N, eta, refrDir);
         float reflectProb = canRefract ? F : 1.0;
-        float transRough = translucentPlasticHit ? clamp(uRoughness, 0.02, 1.0) : 0.0;
+        float transRough = translucentPlasticHit ? clamp(material.roughness, 0.02, 1.0) : 0.0;
 
         if (rand(seed) < reflectProb) {
           dir = translucentPlasticHit
@@ -1302,32 +1467,41 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
           dir = translucentPlasticHit
             ? sampleAroundDirection(refrDir, transRough, seed)
             : normalize(refrDir);
-          vec3 tint = mix(vec3(1.0), baseColor, uSurfaceTransmission);
+          vec3 tint = mix(vec3(1.0), baseColor, material.surfaceTransmission);
           throughput *= tint;
           origin = hitPos - N * bias;
         }
         lastBrdfPdf = 0.0;
+        ignoreSurfaceTraversalHits = true;
         continue;
       }
       // Fall through to opaque surface handling when opacity check passes
     }
+    ignoreSurfaceTraversalHits = false;
 
     // Direct lighting from analytical lights
-    vec3 direct = shadeDirect(hitPos, shadingNormal, geomNormal, baseColor, V, seed);
+    bool ignoreSurfaceSecondaryHits = (material.mode == 2 || material.mode == 3);
+    vec3 direct = shadeDirect(
+      hitPos,
+      shadingNormal,
+      geomNormal,
+      baseColor,
+      V,
+      metallic,
+      rough,
+      diffRough,
+      wrap,
+      F0,
+      seed,
+      ignoreSurfaceSecondaryHits
+    );
     radiance += throughput * direct;
 
-    bool useMatte = uMaterialMode == 1;
-    float metallic = uMaterialMode == 0 ? uMetallic : 0.0;
-    float rough = useMatte ? uMatteRoughness : uRoughness;
-    float diffRough = useMatte ? uMatteDiffuseRoughness : 0.0;
-    float wrap = useMatte ? uWrapDiffuse : 0.0;
-    vec3 F0 = useMatte ? vec3(uMatteSpecular) : mix(vec3(0.04), baseColor, metallic);
-
-    if (bounce == 0 && uMaterialMode == 0 && uRimBoost > 0.0) {
+    if (bounce == 0 && material.mode == 0 && material.rimBoost > 0.0) {
       float NdotV = max(dot(shadingNormal, V), 0.0);
       float rim = pow(1.0 - NdotV, 3.0);
       vec3 rimColor = baseColor;
-      radiance += throughput * rimColor * (uRimBoost * rim);
+      radiance += throughput * rimColor * (material.rimBoost * rim);
     }
 
     // Next Event Estimation: Sample environment directly with MIS
@@ -1338,7 +1512,7 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
 
       if (envNdotL > 0.0) {
         // Check visibility
-        bool occluded = traceAny(hitPos + geomNormal * bias, envDir, 1e20);
+        bool occluded = traceAny(hitPos + geomNormal * bias, envDir, 1e20, ignoreSurfaceSecondaryHits);
         if (!occluded) {
           // Evaluate BRDF for this direction
           vec3 H = normalize(V + envDir);
@@ -1470,7 +1644,7 @@ vec3 traceVisualization(vec3 origin, vec3 dir) {
   int primIndex;
   vec3 extra;
   int traversalCost;
-  bool hit = traceClosest(origin, dir, t, primType, primIndex, extra, traversalCost);
+  bool hit = traceClosest(origin, dir, t, primType, primIndex, extra, traversalCost, false);
 
   if (uVisMode == 1) {
     // Normal visualization
@@ -1688,7 +1862,6 @@ export function initWebGL(canvas, logger) {
   if (!floatLinear) {
     throw new Error("OES_texture_float_linear is required for environment lighting.");
   }
-  logger.info("WebGL2 context created");
 
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
@@ -1774,6 +1947,7 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1i(gl.getUniformLocation(program, "uSphereColorTex"), uniforms.sphereColorUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderTex"), uniforms.cylinderUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderColorTex"), uniforms.cylinderColorUnit);
+  gl.uniform1i(gl.getUniformLocation(program, "uMaterialTex"), uniforms.materialUnit ?? 15);
   gl.uniform1i(gl.getUniformLocation(program, "uVolumeTex"), uniforms.volumeUnit ?? 13);
   gl.uniform1i(gl.getUniformLocation(program, "uAccumTex"), uniforms.accumUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uEnvTex"), uniforms.envUnit);
@@ -1789,11 +1963,15 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform2fv(gl.getUniformLocation(program, "uTriFlagTexSize"), uniforms.triFlagTexSize ?? [1, 1]);
   gl.uniform2fv(gl.getUniformLocation(program, "uPrimIndexTexSize"), uniforms.primIndexTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uSphereTexSize"), uniforms.sphereTexSize);
+  gl.uniform2fv(gl.getUniformLocation(program, "uSphereColorTexSize"), uniforms.sphereColorTexSize ?? uniforms.sphereTexSize);
   gl.uniform2fv(gl.getUniformLocation(program, "uCylinderTexSize"), uniforms.cylinderTexSize);
+  gl.uniform2fv(gl.getUniformLocation(program, "uCylinderColorTexSize"), uniforms.cylinderColorTexSize ?? uniforms.cylinderTexSize);
+  gl.uniform2fv(gl.getUniformLocation(program, "uMaterialTexSize"), uniforms.materialTexSize ?? [1, 1]);
   gl.uniform1i(gl.getUniformLocation(program, "uFrameIndex"), uniforms.frameIndex);
   gl.uniform1i(gl.getUniformLocation(program, "uTriCount"), uniforms.triCount);
   gl.uniform1i(gl.getUniformLocation(program, "uSphereCount"), uniforms.sphereCount);
   gl.uniform1i(gl.getUniformLocation(program, "uCylinderCount"), uniforms.cylinderCount);
+  gl.uniform1i(gl.getUniformLocation(program, "uMaterialCount"), uniforms.materialCount ?? 1);
   gl.uniform1i(gl.getUniformLocation(program, "uVolumeEnabled"), uniforms.volumeEnabled ?? 0);
   gl.uniform3fv(gl.getUniformLocation(program, "uVolumeMin"), uniforms.volumeMin ?? [0, 0, 0]);
   gl.uniform3fv(gl.getUniformLocation(program, "uVolumeMax"), uniforms.volumeMax ?? [0, 0, 0]);
@@ -1816,7 +1994,7 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1f(gl.getUniformLocation(program, "uMatteRoughness"), uniforms.matteRoughness ?? 0.5);
   gl.uniform1f(gl.getUniformLocation(program, "uMatteDiffuseRoughness"), uniforms.matteDiffuseRoughness ?? 0.5);
   gl.uniform1f(gl.getUniformLocation(program, "uWrapDiffuse"), uniforms.wrapDiffuse ?? 0.2);
-  gl.uniform1f(gl.getUniformLocation(program, "uSurfaceIor"), uniforms.surfaceIor ?? 1.33);
+  gl.uniform1f(gl.getUniformLocation(program, "uSurfaceIor"), uniforms.surfaceIor ?? 1.0);
   gl.uniform1f(gl.getUniformLocation(program, "uSurfaceTransmission"), uniforms.surfaceTransmission ?? 0.35);
   gl.uniform1f(gl.getUniformLocation(program, "uSurfaceOpacity"), uniforms.surfaceOpacity ?? 0.0);
   gl.uniform1i(gl.getUniformLocation(program, "uSurfaceFlagMode"), uniforms.surfaceFlagMode ?? 0);
