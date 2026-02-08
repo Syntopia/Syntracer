@@ -6,7 +6,7 @@ function absDot(a, b) {
   return Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
 }
 
-test("horizontal drag yaws around world vertical axis", () => {
+test("horizontal drag yaws around camera local up axis", () => {
   const start = [0, 0, 0, 1];
   const rotated = applyOrbitDragToRotation(start, 120, 0);
   const forward = quatRotateVec(rotated, [0, 0, 1]);
@@ -24,14 +24,15 @@ test("vertical drag pitches around camera horizontal axis", () => {
   assert(Math.abs(forward[0]) < 1e-6, "Pitch-only drag should not introduce yaw");
 });
 
-test("pitch is clamped near poles to keep orbit stable", () => {
+test("repeated pitch produces a valid unit-length forward vector", () => {
   let rotation = [0, 0, 0, 1];
   for (let i = 0; i < 200; i += 1) {
     rotation = applyOrbitDragToRotation(rotation, 0, -20);
   }
   const forward = quatRotateVec(rotation, [0, 0, 1]);
+  const len = Math.hypot(forward[0], forward[1], forward[2]);
 
-  assert(Math.abs(forward[1]) < 0.995, "Forward vector Y should stay below pole clamp");
+  assert(Math.abs(len - 1) < 1e-6, "Forward vector should remain unit length after many pitch steps");
 });
 
 test("combined drag still produces a valid orientation", () => {

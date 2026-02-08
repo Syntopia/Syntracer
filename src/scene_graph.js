@@ -73,15 +73,17 @@ export function defaultDisplayForObjectType(objectType) {
   }
   if (objectType === SCENE_OBJECT_TYPES.VOLUME) {
     return {
-      style: "isosurface",
+      style: "volumetric",
       isoLevel: 0.77,
       isoPositiveColor: [0.15, 0.85, 0.2],
       isoNegativeColor: [0.9, 0.2, 0.2],
       volumeValueMin: 0.0,
-      volumeValueMax: 1.0,
+      volumeValueMax: 0.72,
       volumeOpacityScale: 1.0,
-      volumeStepSize: 0.5,
-      volumeTransferPreset: "grayscale",
+      volumeStepSize: 0.2,
+      volumePositiveColor: [0.15, 0.85, 0.2],
+      volumeNegativeColor: [0.9, 0.2, 0.2],
+      volumeTransferPreset: "orbital",
       atomScale: 1.0,
       bondRadius: 0.12,
       probeRadius: 1.4,
@@ -106,10 +108,12 @@ export function defaultDisplayForObjectType(objectType) {
     isoPositiveColor: [0.15, 0.85, 0.2],
     isoNegativeColor: [0.9, 0.2, 0.2],
     volumeValueMin: 0.0,
-    volumeValueMax: 1.0,
+    volumeValueMax: 0.72,
     volumeOpacityScale: 1.0,
-    volumeStepSize: 0.5,
-    volumeTransferPreset: "grayscale",
+    volumeStepSize: 0.2,
+    volumePositiveColor: [0.15, 0.85, 0.2],
+    volumeNegativeColor: [0.9, 0.2, 0.2],
+    volumeTransferPreset: "orbital",
     smoothNormals: false,
     showSheetHbonds: false
   };
@@ -154,8 +158,16 @@ function normalizeDisplaySettings(display, objectType) {
   const volumeValueMax = Number(display?.volumeValueMax ?? base.volumeValueMax);
   const volumeOpacityScale = Number(display?.volumeOpacityScale ?? base.volumeOpacityScale);
   const volumeStepSize = Number(display?.volumeStepSize ?? base.volumeStepSize);
+  const volumePositiveColor = normalizeColorVec3(
+    display?.volumePositiveColor ?? base.volumePositiveColor,
+    "Positive volume color"
+  );
+  const volumeNegativeColor = normalizeColorVec3(
+    display?.volumeNegativeColor ?? base.volumeNegativeColor,
+    "Negative volume color"
+  );
   const volumeTransferPreset = String(display?.volumeTransferPreset ?? base.volumeTransferPreset);
-  const allowedVolumeTransferPresets = new Set(["grayscale", "heatmap"]);
+  const allowedVolumeTransferPresets = new Set(["orbital", "grayscale", "heatmap"]);
 
   if (!Number.isFinite(atomScale) || atomScale <= 0) {
     throw new Error("Atom radius scale must be > 0.");
@@ -201,6 +213,8 @@ function normalizeDisplaySettings(display, objectType) {
     volumeValueMax,
     volumeOpacityScale,
     volumeStepSize,
+    volumePositiveColor,
+    volumeNegativeColor,
     volumeTransferPreset,
     smoothNormals: Boolean(display?.smoothNormals ?? base.smoothNormals),
     showSheetHbonds: Boolean(display?.showSheetHbonds ?? base.showSheetHbonds)
@@ -324,6 +338,8 @@ function createDefaultRepresentation(objectType, repId) {
     name = "Spacefill";
   } else if (display.style === "isosurface") {
     name = "Isosurface";
+  } else if (display.style === "volumetric") {
+    name = "Volumetric";
   }
   return {
     id: repId,

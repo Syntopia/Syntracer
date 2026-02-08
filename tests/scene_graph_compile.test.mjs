@@ -36,10 +36,10 @@ test("compileSceneGraphGeometry compiles visible representations and chooses sel
   const cache = new Map();
   const compiled = compileSceneGraphGeometry(graph, { geometryCache: cache, logger: null });
   assert.equal(compiled.spheres.length, 2);
-  assert.equal(compiled.cylinders.length, 1);
+  assert.equal(compiled.cylinders.length, 2);  // stick style splits each bond into 2 half-cylinders
   assert.equal(compiled.materials.length, 1);
   assert.equal(compiled.sphereMaterialIndices.length, 2);
-  assert.equal(compiled.cylinderMaterialIndices.length, 1);
+  assert.equal(compiled.cylinderMaterialIndices.length, 2);
   assert.equal(compiled.primaryMaterial.mode, "matte");
   assert.equal(compiled.hasMaterialConflict, false);
   assert.ok(cache.has(rep.id));
@@ -64,7 +64,7 @@ test("compileSceneGraphGeometry reports conflicts when visible representations h
   assert.equal(compiled.hasMaterialConflict, true);
   assert.equal(compiled.materials.length, 2);
   assert.equal(compiled.sphereMaterialIndices.length, 4);
-  assert.equal(compiled.cylinderMaterialIndices.length, 1);
+  assert.equal(compiled.cylinderMaterialIndices.length, 2);  // stick style: 2 half-cylinders per bond
 
   toggleRepresentationVisibility(graph, object.id, added.id, false);
   const compiledNoConflict = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
@@ -99,7 +99,7 @@ test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond
 
   const cylinderRange = findPrimitivePickRange(compiled.pickRanges, PRIM_CYLINDER, 0);
   assert.ok(cylinderRange);
-  assert.deepEqual(cylinderRange.cylinderBondAtomPairs, [[0, 1]]);
+  assert.deepEqual(cylinderRange.cylinderBondAtomPairs, [[0, 1], [0, 1]]);  // stick style: 2 half-cylinders per bond
 });
 
 test("compileSceneGraphGeometry exposes active volumetric representation metadata", () => {

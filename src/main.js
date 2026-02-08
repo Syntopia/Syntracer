@@ -152,6 +152,8 @@ const volumeValueMinInput = document.getElementById("volumeValueMin");
 const volumeValueMaxInput = document.getElementById("volumeValueMax");
 const volumeOpacityScaleInput = document.getElementById("volumeOpacityScale");
 const volumeStepSizeInput = document.getElementById("volumeStepSize");
+const volumePositiveColorInput = document.getElementById("volumePositiveColor");
+const volumeNegativeColorInput = document.getElementById("volumeNegativeColor");
 const volumeTransferPresetSelect = document.getElementById("volumeTransferPreset");
 const materialSection = materialSelect?.closest(".form-section") || null;
 
@@ -617,7 +619,11 @@ function getDisplaySettingsFromControls() {
   const volumeValueMax = requireNumberInput(volumeValueMaxInput, "Volume value window max");
   const volumeOpacityScale = requireNumberInput(volumeOpacityScaleInput, "Volume opacity scale");
   const volumeStepSize = requireNumberInput(volumeStepSizeInput, "Volume step size");
-  const volumeTransferPreset = String(volumeTransferPresetSelect?.value || "grayscale");
+  if (!volumePositiveColorInput) throw new Error("Positive volume color input is missing.");
+  if (!volumeNegativeColorInput) throw new Error("Negative volume color input is missing.");
+  const volumePositiveColor = hexToRgb(volumePositiveColorInput.value);
+  const volumeNegativeColor = hexToRgb(volumeNegativeColorInput.value);
+  const volumeTransferPreset = String(volumeTransferPresetSelect?.value || "orbital");
 
   if (atomScale <= 0) throw new Error("Atom radius scale must be > 0.");
   if (bondRadius < 0) throw new Error("Bond radius must be >= 0.");
@@ -627,7 +633,7 @@ function getDisplaySettingsFromControls() {
   if (volumeValueMin >= volumeValueMax) throw new Error("Volume value window min must be less than max.");
   if (volumeOpacityScale < 0) throw new Error("Volume opacity scale must be >= 0.");
   if (volumeStepSize <= 0) throw new Error("Volume step size must be > 0.");
-  if (!["grayscale", "heatmap"].includes(volumeTransferPreset)) {
+  if (!["orbital", "grayscale", "heatmap"].includes(volumeTransferPreset)) {
     throw new Error(`Unsupported volume transfer preset: ${volumeTransferPreset}`);
   }
 
@@ -644,6 +650,8 @@ function getDisplaySettingsFromControls() {
     volumeValueMax,
     volumeOpacityScale,
     volumeStepSize,
+    volumePositiveColor,
+    volumeNegativeColor,
     volumeTransferPreset,
     showSheetHbonds: showSheetHbondsToggle?.checked || false
   };
@@ -772,6 +780,12 @@ function applyRepresentationToControls(representation, objectType) {
   setSliderValue(volumeValueMaxInput, display.volumeValueMax);
   setSliderValue(volumeOpacityScaleInput, display.volumeOpacityScale);
   setSliderValue(volumeStepSizeInput, display.volumeStepSize);
+  if (volumePositiveColorInput) {
+    volumePositiveColorInput.value = rgbToHex(display.volumePositiveColor);
+  }
+  if (volumeNegativeColorInput) {
+    volumeNegativeColorInput.value = rgbToHex(display.volumeNegativeColor);
+  }
   if (volumeTransferPresetSelect) {
     volumeTransferPresetSelect.value = display.volumeTransferPreset;
   }
@@ -1459,7 +1473,9 @@ function applyMaterialPreset(mode) {
 }
 
 function mapVolumeTransferPresetToUniform(preset) {
-  if (preset === "heatmap") return 1;
+  if (preset === "orbital") return 0;
+  if (preset === "grayscale") return 1;
+  if (preset === "heatmap") return 2;
   return 0;
 }
 
@@ -1646,6 +1662,98 @@ function applyCameraToBounds(bounds) {
   );
 }
 
+function computePCA(positions) {
+  const n = positions.length;
+  if (n === 0) return { centroid: [0,0,0], axes: [[1,0,0],[0,1,0],[0,0,1]] };
+
+  // Centroid
+  let cx = 0, cy = 0, cz = 0;
+  for (const p of positions) { cx += p[0]; cy += p[1]; cz += p[2]; }
+  cx /= n; cy /= n; cz /= n;
+
+  // Covariance matrix (symmetric 3x3)
+  let xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+  for (const p of positions) {
+    const dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
+    xx += dx*dx; xy += dx*dy; xz += dx*dz;
+    yy += dy*dy; yz += dy*dz; zz += dz*dz;
+  }
+
+  // Power iteration for eigenvectors with deflation
+  function powerIteration(mxx, mxy, mxz, myy, myz, mzz, seed) {
+    let v = seed.slice();
+    for (let i = 0; i < 30; i++) {
+      const nx = mxx*v[0] + mxy*v[1] + mxz*v[2];
+      const ny = mxy*v[0] + myy*v[1] + myz*v[2];
+      const nz = mxz*v[0] + myz*v[1] + mzz*v[2];
+      const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+      if (len < 1e-12) break;
+      v = [nx/len, ny/len, nz/len];
+    }
+    const ev = (mxx*v[0]+mxy*v[1]+mxz*v[2])*v[0]
+             + (mxy*v[0]+myy*v[1]+myz*v[2])*v[1]
+             + (mxz*v[0]+myz*v[1]+mzz*v[2])*v[2];
+    return { vec: v, val: ev };
+  }
+
+  function deflate(mxx, mxy, mxz, myy, myz, mzz, vec, val) {
+    return [
+      mxx - val*vec[0]*vec[0], mxy - val*vec[0]*vec[1], mxz - val*vec[0]*vec[2],
+      myy - val*vec[1]*vec[1], myz - val*vec[1]*vec[2],
+      mzz - val*vec[2]*vec[2]
+    ];
+  }
+
+  const e1 = powerIteration(xx, xy, xz, yy, yz, zz, [1, 0.1, 0.05]);
+  const [dxx, dxy, dxz, dyy, dyz, dzz] = deflate(xx, xy, xz, yy, yz, zz, e1.vec, e1.val);
+  const e2 = powerIteration(dxx, dxy, dxz, dyy, dyz, dzz, [0.05, 1, 0.1]);
+  // e3 = e1 × e2 (orthogonal by construction)
+  const e3vec = [
+    e1.vec[1]*e2.vec[2] - e1.vec[2]*e2.vec[1],
+    e1.vec[2]*e2.vec[0] - e1.vec[0]*e2.vec[2],
+    e1.vec[0]*e2.vec[1] - e1.vec[1]*e2.vec[0]
+  ];
+  const e3len = Math.hypot(e3vec[0], e3vec[1], e3vec[2]) || 1;
+  const e3 = [e3vec[0]/e3len, e3vec[1]/e3len, e3vec[2]/e3len];
+
+  // axes[0]=PC1 (largest), axes[1]=PC2 (medium), axes[2]=PC3 (smallest)
+  return { centroid: [cx, cy, cz], axes: [e1.vec, e2.vec, e3] };
+}
+
+function quatFromBasis(right, up, forward) {
+  const m00 = right[0], m01 = up[0], m02 = forward[0];
+  const m10 = right[1], m11 = up[1], m12 = forward[1];
+  const m20 = right[2], m21 = up[2], m22 = forward[2];
+  const trace = m00 + m11 + m22;
+  let qw, qx, qy, qz;
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    qw = 0.25 / s;
+    qx = (m21 - m12) * s;
+    qy = (m02 - m20) * s;
+    qz = (m10 - m01) * s;
+  } else if (m00 > m11 && m00 > m22) {
+    const s = 2 * Math.sqrt(1 + m00 - m11 - m22);
+    qw = (m21 - m12) / s;
+    qx = 0.25 * s;
+    qy = (m01 + m10) / s;
+    qz = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const s = 2 * Math.sqrt(1 + m11 - m00 - m22);
+    qw = (m02 - m20) / s;
+    qx = (m01 + m10) / s;
+    qy = 0.25 * s;
+    qz = (m12 + m21) / s;
+  } else {
+    const s = 2 * Math.sqrt(1 + m22 - m00 - m11);
+    qw = (m10 - m01) / s;
+    qx = (m02 + m20) / s;
+    qy = (m12 + m21) / s;
+    qz = 0.25 * s;
+  }
+  return normalizeQuat([qx, qy, qz, qw]);
+}
+
 function normalizeQuat(q) {
   const len = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
   return [q[0] / len, q[1] / len, q[2] / len, q[3] / len];
@@ -1759,12 +1867,11 @@ function updateCameraFromInput(dt) {
     cameraState.target[2] += right[2] * moveSpeed;
     moved = true;
   }
-  if (inputState.keys.has("q")) {
-    cameraState.target[1] += moveSpeed;
-    moved = true;
-  }
-  if (inputState.keys.has("e")) {
-    cameraState.target[1] -= moveSpeed;
+  if (inputState.keys.has("q") || inputState.keys.has("e")) {
+    const rollSpeed = 1.5 * dt; // radians per second
+    const rollAngle = inputState.keys.has("q") ? rollSpeed : -rollSpeed;
+    const rollQuat = quatFromAxisAngle(forward, rollAngle);
+    cameraState.rotation = normalizeQuat(quatMultiply(rollQuat, cameraState.rotation));
     moved = true;
   }
 
@@ -2103,6 +2210,124 @@ function autofocusFromMouseRay() {
   }
 }
 
+function alignCameraToPCA(viewIndex) {
+  if (!sceneData || !sceneGraph) {
+    logger.warn("PCA align: no scene loaded.");
+    return;
+  }
+  if (!pointerState.overCanvas) return;
+
+  const camera = computeCameraVectors();
+  const hit = tracePointerHit(camera);
+  if (!hit) {
+    logger.info("PCA align: no object under mouse.");
+    return;
+  }
+
+  const range = findPrimitivePickRange(sceneData.pickRanges, hit.primType, hit.primIndex);
+  const sceneObject = range ? getSceneObjectByRange(range) : null;
+  if (!sceneObject) {
+    logger.warn("PCA align: could not identify scene object.");
+    return;
+  }
+
+  // Gather positions
+  const atoms = sceneObject.molData?.atoms;
+  let positions;
+  if (Array.isArray(atoms) && atoms.length > 0) {
+    positions = atoms.map(a => a.position);
+  } else if (sceneObject.volumeData?.bounds) {
+    const b = sceneObject.volumeData.bounds;
+    positions = [
+      [b.minX, b.minY, b.minZ], [b.maxX, b.minY, b.minZ],
+      [b.minX, b.maxY, b.minZ], [b.maxX, b.maxY, b.minZ],
+      [b.minX, b.minY, b.maxZ], [b.maxX, b.minY, b.maxZ],
+      [b.minX, b.maxY, b.maxZ], [b.maxX, b.maxY, b.maxZ]
+    ];
+  } else {
+    logger.warn("PCA align: object has no positions.");
+    return;
+  }
+
+  const { centroid, axes } = computePCA(positions);
+  const [pc1, pc2, pc3] = axes;
+
+  let right, up, forward;
+  if (viewIndex === 1) {
+    right = pc1; up = pc2; forward = pc3;
+  } else if (viewIndex === 2) {
+    right = pc1; up = pc3; forward = pc2;
+  } else {
+    right = pc2; up = pc3; forward = pc1;
+  }
+
+  // Ensure right-handed: forward = right × up
+  const cross = [
+    right[1]*up[2] - right[2]*up[1],
+    right[2]*up[0] - right[0]*up[2],
+    right[0]*up[1] - right[1]*up[0]
+  ];
+  const dot = cross[0]*forward[0] + cross[1]*forward[1] + cross[2]*forward[2];
+  if (dot < 0) forward = [-forward[0], -forward[1], -forward[2]];
+
+  cameraState.target = [centroid[0], centroid[1], centroid[2]];
+  cameraState.rotation = quatFromBasis(right, up, forward);
+  renderState.cameraDirty = true;
+  resetAccumulation();
+
+  const label = getHoverLabelForHit(hit) || sceneObject.label;
+  logger.info(`PCA view ${viewIndex} on ${label}`);
+  updateHoverBoxOverlay();
+}
+
+function levelCameraToGroundPlane() {
+  // Rotate the camera around its forward (view) axis so the z=0 ground plane appears level.
+  // "Level" means the world-Z axis, projected onto the camera's image plane, points straight up on screen.
+  const forward = quatRotateVec(cameraState.rotation, [0, 0, 1]);
+  const up = quatRotateVec(cameraState.rotation, [0, 1, 0]);
+
+  // World up is [0,0,1] (z=0 ground plane means Z is vertical)
+  const worldUp = [0, 0, 1];
+
+  // Project worldUp onto the camera's image plane (perpendicular to forward)
+  const dot = worldUp[0]*forward[0] + worldUp[1]*forward[1] + worldUp[2]*forward[2];
+  const projected = [
+    worldUp[0] - dot*forward[0],
+    worldUp[1] - dot*forward[1],
+    worldUp[2] - dot*forward[2]
+  ];
+  const projLen = Math.hypot(projected[0], projected[1], projected[2]);
+  if (projLen < 1e-8) {
+    // Camera is looking straight up or down along Z — can't define "level"
+    logger.info("Level: camera is looking along Z axis, cannot determine level orientation.");
+    return;
+  }
+  // Desired up direction (normalized)
+  const desiredUp = [projected[0]/projLen, projected[1]/projLen, projected[2]/projLen];
+
+  // Compute the roll angle between current up and desired up, around forward
+  const cosAngle = up[0]*desiredUp[0] + up[1]*desiredUp[1] + up[2]*desiredUp[2];
+  // Cross product of up and desiredUp to determine sign
+  const cross = [
+    up[1]*desiredUp[2] - up[2]*desiredUp[1],
+    up[2]*desiredUp[0] - up[0]*desiredUp[2],
+    up[0]*desiredUp[1] - up[1]*desiredUp[0]
+  ];
+  const sinAngle = cross[0]*forward[0] + cross[1]*forward[1] + cross[2]*forward[2];
+  const angle = Math.atan2(sinAngle, cosAngle);
+
+  if (Math.abs(angle) < 1e-6) {
+    logger.info("Level: camera is already level.");
+    return;
+  }
+
+  const rollQuat = quatFromAxisAngle(forward, angle);
+  cameraState.rotation = normalizeQuat(quatMultiply(rollQuat, cameraState.rotation));
+  renderState.cameraDirty = true;
+  resetAccumulation();
+  logger.info("Camera leveled to ground plane.");
+}
+
 function ensureWebGL() {
   if (!glState) {
     if (glInitFailed) {
@@ -2273,17 +2498,33 @@ function renderFrame() {
   let volumeOpacity = renderState.volumeOpacity;
   let volumeStep = renderState.volumeStep;
   let volumeTransferPreset = 0;
+  let volumePositiveColor = [0.15, 0.85, 0.2];
+  let volumeNegativeColor = [0.9, 0.2, 0.2];
   let volumeDensity = renderState.volumeDensity;
 
   if (hasVolumetricRepresentation) {
-    volumeThreshold = clamp(Number(volumetricDisplay.volumeValueMin ?? 0.0), 0.0, 0.99);
-    volumeValueMax = clamp(Number(volumetricDisplay.volumeValueMax ?? 1.0), 0.01, 1.0);
-    if (volumeValueMax <= volumeThreshold) {
+    const volMinNorm = clamp(Number(volumetricDisplay.volumeValueMin ?? 0.0), 0.0, 0.99);
+    const volMaxNorm = clamp(Number(volumetricDisplay.volumeValueMax ?? 1.0), 0.01, 1.0);
+    if (volMaxNorm <= volMinNorm) {
       throw new Error("Volume value window max must be greater than min.");
     }
+    // Log-scale mapping matching the isosurface slider (same lower/upper derivation)
+    const vol = sceneData.volume;
+    const volAbsMax = Number(vol?.absMax ?? vol?.maxValue ?? 1.0);
+    const volMinAbs = Number(vol?.minAbsNonZero ?? 0);
+    const lower = Math.max(
+      (Number.isFinite(volMinAbs) && volMinAbs > 0) ? volMinAbs : volAbsMax * 1e-6,
+      volAbsMax * 1e-12, 1e-12
+    );
+    const upper = Math.max(volAbsMax, lower * (1 + 1e-9));
+    const logLower = Math.log(lower / upper);  // normalized: lower/absMax in log space
+    volumeThreshold = Math.exp(logLower + volMinNorm * (0 - logLower));  // maps [0,1] → [lower/upper, 1]
+    volumeValueMax = Math.exp(logLower + volMaxNorm * (0 - logLower));
     volumeOpacity = clamp(Number(volumetricDisplay.volumeOpacityScale ?? 1.0), 0.0, 20.0);
     volumeStep = clamp(Number(volumetricDisplay.volumeStepSize ?? 0.5), 0.01, 5.0);
     volumeTransferPreset = mapVolumeTransferPresetToUniform(volumetricDisplay.volumeTransferPreset);
+    if (volumetricDisplay.volumePositiveColor) volumePositiveColor = volumetricDisplay.volumePositiveColor;
+    if (volumetricDisplay.volumeNegativeColor) volumeNegativeColor = volumetricDisplay.volumeNegativeColor;
     volumeDensity = 1.0;
   }
 
@@ -2311,7 +2552,7 @@ function renderFrame() {
       sizeY > 0 ? 1 / sizeY : 0,
       sizeZ > 0 ? 1 / sizeZ : 0
     ];
-    volumeMaxValue = volume.maxValue;
+    volumeMaxValue = Number(volume.absMax ?? volume.maxValue);
   }
 
   if (!renderState.useBvh && sceneData.triCount > MAX_BRUTE_FORCE_TRIS) {
@@ -2423,6 +2664,8 @@ setTraceUniforms(gl, traceProgram, {
     volumeThreshold,
     volumeValueMax,
     volumeTransferPreset,
+    volumePositiveColor,
+    volumeNegativeColor,
     useBvh: renderState.useBvh ? 1 : 0,
     useImportedColor: renderState.useImportedColor ? 1 : 0,
     baseColor: renderState.baseColor,
@@ -2813,6 +3056,24 @@ window.addEventListener("keydown", (event) => {
     } catch (err) {
       const msg = err?.message || String(err);
       logger.error(msg);
+    }
+    event.preventDefault();
+    return;
+  }
+  if (!event.repeat && !isTextEntryTarget(event.target) && (key === "1" || key === "2" || key === "3")) {
+    try {
+      alignCameraToPCA(Number(key));
+    } catch (err) {
+      logger.error(err?.message || String(err));
+    }
+    event.preventDefault();
+    return;
+  }
+  if (!event.repeat && !isTextEntryTarget(event.target) && key === "z") {
+    try {
+      levelCameraToGroundPlane();
+    } catch (err) {
+      logger.error(err?.message || String(err));
     }
     event.preventDefault();
     return;

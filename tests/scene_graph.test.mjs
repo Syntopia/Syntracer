@@ -75,7 +75,7 @@ test("non-PDB sources classify everything as ligand", () => {
   assert.equal(graph.objects[0].atomCount, 5);
 });
 
-test("scene graph can include volume objects with default isosurface representation", () => {
+test("scene graph can include volume objects with default volumetric representation", () => {
   const volumeData = {
     data: new Float32Array(8),
     dims: [2, 2, 2],
@@ -94,8 +94,8 @@ test("scene graph can include volume objects with default isosurface representat
   const volumeObject = graph.objects.find((o) => o.type === SCENE_OBJECT_TYPES.VOLUME);
   assert.ok(volumeObject);
   assert.equal(volumeObject.label, "Volume (2x2x2)");
-  assert.equal(volumeObject.representations[0].display.style, "isosurface");
-  assert.equal(volumeObject.representations[0].name, "Isosurface");
+  assert.equal(volumeObject.representations[0].display.style, "volumetric");
+  assert.equal(volumeObject.representations[0].name, "Volumetric");
   assert.deepEqual(volumeObject.representations[0].display.isoPositiveColor, [0.15, 0.85, 0.2]);
   assert.deepEqual(volumeObject.representations[0].display.isoNegativeColor, [0.9, 0.2, 0.2]);
 });

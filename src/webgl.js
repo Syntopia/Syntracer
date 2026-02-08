@@ -76,6 +76,8 @@ uniform int uVolumeMaxSteps;
 uniform float uVolumeThreshold;
 uniform float uVolumeValueMax;
 uniform int uVolumeTransferPreset;
+uniform vec3 uVolumePositiveColor;
+uniform vec3 uVolumeNegativeColor;
 
 // Primitive type constants
 const int PRIM_TRIANGLE = 0;
@@ -531,9 +533,14 @@ float sampleVolume(vec3 pos) {
   return texture(uVolumeTex, uvw).r;
 }
 
-vec3 volumeTransferColor(float t) {
+vec3 volumeTransferColor(float t, float rawSign) {
   float x = clamp(t, 0.0, 1.0);
-  if (uVolumeTransferPreset == 1) {
+  if (uVolumeTransferPreset == 0) {
+    // Orbital: positive/negative colors
+    return rawSign >= 0.0 ? uVolumePositiveColor : uVolumeNegativeColor;
+  }
+  if (uVolumeTransferPreset == 2) {
+    // Heatmap
     vec3 c0 = vec3(0.0, 0.0, 0.0);
     vec3 c1 = vec3(0.0, 0.2, 0.8);
     vec3 c2 = vec3(0.0, 0.9, 0.9);
@@ -544,6 +551,7 @@ vec3 volumeTransferColor(float t) {
     if (x < 0.75) return mix(c2, c3, (x - 0.50) / 0.25);
     return mix(c3, c4, (x - 0.75) / 0.25);
   }
+  // Grayscale
   return vec3(x);
 }
 
@@ -1418,13 +1426,14 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
             if (tCurrent > tExit) break;
             float stepSize = min(uVolumeStep, tExit - tCurrent);
             vec3 pos = origin + dir * tCurrent;
-            float densityNorm = sampleVolume(pos) * invMax;
+            float rawSample = sampleVolume(pos);
+            float densityNorm = abs(rawSample) * invMax;
             float windowSpan = max(uVolumeValueMax - uVolumeThreshold, 1e-6);
             float mapped = clamp((densityNorm - uVolumeThreshold) / windowSpan, 0.0, 1.0);
             if (mapped > 0.0) {
               float alpha = 1.0 - exp(-mapped * uVolumeDensity * stepSize);
               alpha = clamp(alpha * uVolumeOpacity, 0.0, 1.0);
-              vec3 volumeColor = volumeTransferColor(mapped) * uVolumeColor;
+              vec3 volumeColor = volumeTransferColor(mapped, rawSample) * uVolumeColor;
               radiance += throughput * volumeColor * alpha;
               throughput *= (1.0 - alpha);
               if (maxComponent(throughput) < 1e-3) {
@@ -1548,7 +1557,7 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     ignoreSurfaceTraversalHits = false;
 
     // Direct lighting from analytical lights
-    bool ignoreSurfaceSecondaryHits = (material.mode == 2 || material.mode == 3);
+    bool ignoreSurfaceSecondaryHits = true;
     vec3 direct = shadeDirect(
       hitPos,
       shadingNormal,
@@ -2053,6 +2062,8 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1f(gl.getUniformLocation(program, "uVolumeThreshold"), uniforms.volumeThreshold ?? 0.0);
   gl.uniform1f(gl.getUniformLocation(program, "uVolumeValueMax"), uniforms.volumeValueMax ?? 1.0);
   gl.uniform1i(gl.getUniformLocation(program, "uVolumeTransferPreset"), uniforms.volumeTransferPreset ?? 0);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumePositiveColor"), uniforms.volumePositiveColor ?? [0.15, 0.85, 0.2]);
+  gl.uniform3fv(gl.getUniformLocation(program, "uVolumeNegativeColor"), uniforms.volumeNegativeColor ?? [0.9, 0.2, 0.2]);
   gl.uniform1i(gl.getUniformLocation(program, "uUseBvh"), uniforms.useBvh);
   gl.uniform1i(gl.getUniformLocation(program, "uUseImportedColor"), uniforms.useImportedColor);
   gl.uniform3fv(gl.getUniformLocation(program, "uBaseColor"), uniforms.baseColor);

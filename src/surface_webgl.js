@@ -887,6 +887,12 @@ function marchingCubesScalarGrid(grid, isovalue) {
     axisVectors = [[step, 0, 0], [0, step, 0], [0, 0, step]];
   }
 
+  // Inverse-transpose Jacobian columns for grid→world gradient transform
+  const a0 = axisVectors[0], a1 = axisVectors[1], a2 = axisVectors[2];
+  const jt0 = [a1[1]*a2[2] - a1[2]*a2[1], a1[2]*a2[0] - a1[0]*a2[2], a1[0]*a2[1] - a1[1]*a2[0]];
+  const jt1 = [a2[1]*a0[2] - a2[2]*a0[1], a2[2]*a0[0] - a2[0]*a0[2], a2[0]*a0[1] - a2[1]*a0[0]];
+  const jt2 = [a0[1]*a1[2] - a0[2]*a1[1], a0[2]*a1[0] - a0[0]*a1[2], a0[0]*a1[1] - a0[1]*a1[0]];
+
   const vertices = [];
   const normals = [];
   const indices = [];
@@ -894,6 +900,27 @@ function marchingCubesScalarGrid(grid, isovalue) {
 
   function getVal(ix, iy, iz) {
     return data[ix + iy * nx + iz * nx * ny];
+  }
+
+  function gridGradient(ix, iy, iz) {
+    return [
+      getVal(Math.min(ix + 1, nx - 1), iy, iz) - getVal(Math.max(ix - 1, 0), iy, iz),
+      getVal(ix, Math.min(iy + 1, ny - 1), iz) - getVal(ix, Math.max(iy - 1, 0), iz),
+      getVal(ix, iy, Math.min(iz + 1, nz - 1)) - getVal(ix, iy, Math.max(iz - 1, 0))
+    ];
+  }
+
+  function interpolateNormal(g0, g1, t) {
+    const gx = g0[0] + t * (g1[0] - g0[0]);
+    const gy = g0[1] + t * (g1[1] - g0[1]);
+    const gz = g0[2] + t * (g1[2] - g0[2]);
+    // Negate: gradient points low→high, but MC normals point high→low
+    const wx = -(gx * jt0[0] + gy * jt1[0] + gz * jt2[0]);
+    const wy = -(gx * jt0[1] + gy * jt1[1] + gz * jt2[1]);
+    const wz = -(gx * jt0[2] + gy * jt1[2] + gz * jt2[2]);
+    const len = Math.sqrt(wx * wx + wy * wy + wz * wz);
+    if (len > 1e-8) return [wx / len, wy / len, wz / len];
+    return [0, 1, 0];
   }
 
   function worldPos(ix, iy, iz) {
@@ -905,22 +932,25 @@ function marchingCubesScalarGrid(grid, isovalue) {
   }
 
   function interpolateVertex(p1, p2, v1, v2) {
-    if (Math.abs(isovalue - v1) < 0.00001) return [...p1];
-    if (Math.abs(isovalue - v2) < 0.00001) return [...p2];
-    if (Math.abs(v1 - v2) < 0.00001) return [...p1];
+    if (Math.abs(isovalue - v1) < 0.00001) return { pos: [...p1], t: 0.0 };
+    if (Math.abs(isovalue - v2) < 0.00001) return { pos: [...p2], t: 1.0 };
+    if (Math.abs(v1 - v2) < 0.00001) return { pos: [...p1], t: 0.0 };
 
     const t = (isovalue - v1) / (v2 - v1);
-    return [
-      p1[0] + t * (p2[0] - p1[0]),
-      p1[1] + t * (p2[1] - p1[1]),
-      p1[2] + t * (p2[2] - p1[2])
-    ];
+    return {
+      pos: [
+        p1[0] + t * (p2[0] - p1[0]),
+        p1[1] + t * (p2[1] - p1[1]),
+        p1[2] + t * (p2[2] - p1[2])
+      ],
+      t
+    };
   }
 
-  function addVertex(pos) {
+  function addVertex(pos, normal) {
     const idx = vertices.length / 3;
     vertices.push(pos[0], pos[1], pos[2]);
-    normals.push(0, 1, 0);
+    normals.push(normal[0], normal[1], normal[2]);
     return idx;
   }
 
@@ -973,8 +1003,13 @@ function marchingCubesScalarGrid(grid, isovalue) {
               edgeVerts[e] = edgeVertexCache.get(key);
             } else {
               const [c0, c1] = edgeCorners[e];
-              const pos = interpolateVertex(corners[c0], corners[c1], v[c0], v[c1]);
-              edgeVerts[e] = addVertex(pos);
+              const { pos, t } = interpolateVertex(corners[c0], corners[c1], v[c0], v[c1]);
+              const o0 = cornerOffsets[c0];
+              const o1 = cornerOffsets[c1];
+              const g0 = gridGradient(ix + o0[0], iy + o0[1], iz + o0[2]);
+              const g1 = gridGradient(ix + o1[0], iy + o1[1], iz + o1[2]);
+              const normal = interpolateNormal(g0, g1, t);
+              edgeVerts[e] = addVertex(pos, normal);
               edgeVertexCache.set(key, edgeVerts[e]);
             }
           }
@@ -993,13 +1028,10 @@ function marchingCubesScalarGrid(grid, isovalue) {
     }
   }
 
-  const vertexArray = new Float32Array(vertices);
-  const indexArray = new Uint32Array(indices);
-  const normalArray = smoothNormalsGPU(vertexArray, new Float32Array(normals), indexArray);
   return {
-    vertices: vertexArray,
-    normals: normalArray,
-    indices: indexArray
+    vertices: new Float32Array(vertices),
+    normals: new Float32Array(normals),
+    indices: new Uint32Array(indices)
   };
 }
 

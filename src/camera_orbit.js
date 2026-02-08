@@ -39,28 +39,27 @@ export function quatRotateVec(q, v) {
 
 export function applyOrbitDragToRotation(rotation, dx, dy, options = {}) {
   const rotateSpeed = options.rotateSpeed ?? 0.004;
-  const poleLimitY = clamp(options.poleLimitY ?? 0.995, 0.8, 0.9999);
-  const worldUp = options.worldUp ?? [0, 1, 0];
 
   const yaw = -dx * rotateSpeed;
   const pitch = -dy * rotateSpeed;
   let nextRotation = normalizeQuat(rotation);
 
+  // Yaw: rotate around the camera's local up axis (viewport Y projected into 3D)
   if (Math.abs(yaw) > 1e-8) {
-    const yawDelta = quatFromAxisAngle(worldUp, yaw);
+    const upAxisRaw = quatRotateVec(nextRotation, [0, 1, 0]);
+    const upLen = Math.hypot(upAxisRaw[0], upAxisRaw[1], upAxisRaw[2]) || 1;
+    const upAxis = [upAxisRaw[0] / upLen, upAxisRaw[1] / upLen, upAxisRaw[2] / upLen];
+    const yawDelta = quatFromAxisAngle(upAxis, yaw);
     nextRotation = normalizeQuat(quatMultiply(yawDelta, nextRotation));
   }
 
+  // Pitch: rotate around the camera's local right axis (viewport X projected into 3D)
   if (Math.abs(pitch) > 1e-8) {
     const rightAxisRaw = quatRotateVec(nextRotation, [1, 0, 0]);
     const rightLen = Math.hypot(rightAxisRaw[0], rightAxisRaw[1], rightAxisRaw[2]) || 1;
     const rightAxis = [rightAxisRaw[0] / rightLen, rightAxisRaw[1] / rightLen, rightAxisRaw[2] / rightLen];
     const pitchDelta = quatFromAxisAngle(rightAxis, pitch);
-    const candidate = normalizeQuat(quatMultiply(pitchDelta, nextRotation));
-    const candidateForward = quatRotateVec(candidate, [0, 0, 1]);
-    if (Math.abs(candidateForward[1]) < poleLimitY) {
-      nextRotation = candidate;
-    }
+    nextRotation = normalizeQuat(quatMultiply(pitchDelta, nextRotation));
   }
 
   return nextRotation;

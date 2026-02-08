@@ -49,10 +49,12 @@ function buildAtomBondGeometry(molData, display) {
     });
   }
   if (style === "stick") {
+    const bondR = display.bondRadius;
     return moleculeToGeometry(molData, {
-      radiusScale: 0.15,
-      bondRadius: display.bondRadius,
-      showBonds: true
+      fixedRadius: bondR,
+      bondRadius: bondR,
+      showBonds: true,
+      splitBondColors: true
     });
   }
   if (style === "vdw") {
@@ -75,17 +77,20 @@ function buildSphereAtomIndices(molData, sphereCount) {
   return Array.from({ length: sphereCount }, (_, idx) => idx);
 }
 
-function buildCylinderBondAtomPairs(molData, cylinderCount) {
+function buildCylinderBondAtomPairs(molData, cylinderCount, splitBondColors) {
   if (!Array.isArray(molData?.bonds)) {
     throw new Error("Molecule bond metadata is missing.");
   }
   if (cylinderCount === 0) {
     return [];
   }
-  if (cylinderCount !== molData.bonds.length) {
-    throw new Error(`Cylinder count (${cylinderCount}) does not match bond count (${molData.bonds.length}).`);
+  const expectedCount = splitBondColors ? molData.bonds.length * 2 : molData.bonds.length;
+  if (cylinderCount !== expectedCount) {
+    throw new Error(`Cylinder count (${cylinderCount}) does not match expected count (${expectedCount}).`);
   }
-  return molData.bonds.map((bond, idx) => {
+  const pairs = [];
+  for (let idx = 0; idx < molData.bonds.length; idx += 1) {
+    const bond = molData.bonds[idx];
     if (!Array.isArray(bond) || bond.length !== 2) {
       throw new Error(`Bond ${idx} is invalid; expected [atomA, atomB].`);
     }
@@ -94,8 +99,12 @@ function buildCylinderBondAtomPairs(molData, cylinderCount) {
     if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) {
       throw new Error(`Bond ${idx} contains invalid atom indices.`);
     }
-    return [a, b];
-  });
+    pairs.push([a, b]);
+    if (splitBondColors) {
+      pairs.push([a, b]);
+    }
+  }
+  return pairs;
 }
 
 function buildSesTriangles(molData, display, material) {
@@ -317,7 +326,8 @@ export function buildRepresentationGeometry(input) {
     spheres = atomBond.spheres;
     cylinders = atomBond.cylinders;
     sphereAtomIndices = buildSphereAtomIndices(molData, spheres.length);
-    cylinderBondAtomPairs = buildCylinderBondAtomPairs(molData, cylinders.length);
+    const isSplitBonds = display.style === "stick";
+    cylinderBondAtomPairs = buildCylinderBondAtomPairs(molData, cylinders.length, isSplitBonds);
   }
 
   return {

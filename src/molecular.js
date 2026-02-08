@@ -334,6 +334,7 @@ function generateBondsFromDistance(atoms, bonds) {
  */
 export function moleculeToGeometry(molData, options = {}) {
   const radiusScale = options.radiusScale ?? 0.4;  // Scale down VdW radii for ball-and-stick
+  const fixedRadius = options.fixedRadius ?? null;
   const bondRadius = options.bondRadius ?? BOND_RADIUS;
   const bondColor = options.bondColor || BOND_COLOR;
   const showBonds = options.showBonds !== false;  // Default to true
@@ -344,7 +345,9 @@ export function moleculeToGeometry(molData, options = {}) {
   // Create spheres for atoms
   for (const atom of molData.atoms) {
     const element = atom.element;
-    const radius = (ELEMENT_RADII[element] || ELEMENT_RADII.DEFAULT) * radiusScale;
+    const radius = fixedRadius != null
+      ? fixedRadius
+      : (ELEMENT_RADII[element] || ELEMENT_RADII.DEFAULT) * radiusScale;
     const color = ELEMENT_COLORS[element] || ELEMENT_COLORS.DEFAULT;
 
     spheres.push({
@@ -356,16 +359,29 @@ export function moleculeToGeometry(molData, options = {}) {
 
   // Create cylinders for bonds
   if (showBonds && bondRadius > 0) {
+    const splitBondColors = options.splitBondColors === true;
     for (const [i, j] of molData.bonds) {
       const a1 = molData.atoms[i];
       const a2 = molData.atoms[j];
 
-      cylinders.push({
-        p1: a1.position,
-        p2: a2.position,
-        radius: bondRadius,
-        color: bondColor
-      });
+      if (splitBondColors) {
+        const mid = [
+          (a1.position[0] + a2.position[0]) * 0.5,
+          (a1.position[1] + a2.position[1]) * 0.5,
+          (a1.position[2] + a2.position[2]) * 0.5
+        ];
+        const c1 = ELEMENT_COLORS[a1.element] || ELEMENT_COLORS.DEFAULT;
+        const c2 = ELEMENT_COLORS[a2.element] || ELEMENT_COLORS.DEFAULT;
+        cylinders.push({ p1: a1.position, p2: mid, radius: bondRadius, color: c1 });
+        cylinders.push({ p1: mid, p2: a2.position, radius: bondRadius, color: c2 });
+      } else {
+        cylinders.push({
+          p1: a1.position,
+          p2: a2.position,
+          radius: bondRadius,
+          color: bondColor
+        });
+      }
     }
   }
 
