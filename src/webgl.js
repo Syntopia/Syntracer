@@ -129,6 +129,7 @@ uniform float uLightAngle[3];
 
 // Visualization modes: 0=normal, 1=normals, 2=BVH traversal cost, 3=BVH depth
 uniform int uVisMode;
+uniform int uTransparentBg;
 
 const float PI = 3.14159265359;
 const int MAX_VOLUME_STEPS = 1024;
@@ -1770,6 +1771,7 @@ void main() {
   // Normal path tracing with accumulation
   int spp = clamp(uSamplesPerBounce, 1, 8);
   vec3 sum = vec3(0.0);
+  float alphaSum = 0.0;
   for (int s = 0; s < 8; s += 1) {
     if (s >= spp) {
       break;
@@ -1794,18 +1796,30 @@ void main() {
       rayDir = normalize(focusPoint - rayOrigin);
     }
 
+    // Primary hit test for transparency
+    float sampleAlpha = 1.0;
+    if (uTransparentBg == 1) {
+      float tA; int ptA; int piA; vec3 exA; int cA;
+      if (!traceClosest(rayOrigin, rayDir, tA, ptA, piA, exA, cA, false)) {
+        sampleAlpha = 0.0;
+      }
+    }
+    alphaSum += sampleAlpha;
+
     sum += tracePath(rayOrigin, rayDir, seed);
   }
   vec3 color = sum / float(spp);
+  float hitAlpha = alphaSum / float(spp);
   color *= uExposure;
 
   vec4 prev = texelFetch(uAccumTex, ivec2(gl_FragCoord.xy), 0);
   if (uFrameIndex == 0) {
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color, hitAlpha);
   } else {
     float fi = float(uFrameIndex);
     vec3 accum = (prev.rgb * fi + color) / (fi + 1.0);
-    outColor = vec4(accum, 1.0);
+    float accumAlpha = (prev.a * fi + hitAlpha) / (fi + 1.0);
+    outColor = vec4(accum, accumAlpha);
   }
 }
 `;
@@ -1821,6 +1835,7 @@ layout(location = 0) out vec4 outColor;
 uniform sampler2D uDisplayTex;
 uniform vec2 uDisplayResolution;
 uniform int uToneMapMode;
+uniform int uTransparentBg;
 
 vec3 toneMapReinhard(vec3 c) {
   return c / (vec3(1.0) + c);
@@ -1837,14 +1852,18 @@ vec3 toneMapACES(vec3 x) {
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uDisplayResolution;
-  vec3 color = texture(uDisplayTex, uv).rgb;
-  vec3 mapped = color;
+  vec4 raw = texture(uDisplayTex, uv);
+  vec3 mapped = raw.rgb;
   if (uToneMapMode == 1) {
-    mapped = toneMapACES(color);
+    mapped = toneMapACES(raw.rgb);
   } else if (uToneMapMode == 2) {
-    mapped = toneMapReinhard(color);
+    mapped = toneMapReinhard(raw.rgb);
   }
-  outColor = vec4(mapped, 1.0);
+  if (uTransparentBg == 1) {
+    outColor = vec4(mapped, raw.a);
+  } else {
+    outColor = vec4(mapped, 1.0);
+  }
 }
 `;
 
@@ -2130,6 +2149,7 @@ export function setTraceUniforms(gl, program, uniforms) {
 
   // Visualization mode
   gl.uniform1i(gl.getUniformLocation(program, "uVisMode"), uniforms.visMode || 0);
+  gl.uniform1i(gl.getUniformLocation(program, "uTransparentBg"), uniforms.transparentBg || 0);
 }
 
 export function setDisplayUniforms(gl, program, uniforms) {
@@ -2138,6 +2158,7 @@ export function setDisplayUniforms(gl, program, uniforms) {
   gl.uniform2fv(gl.getUniformLocation(program, "uDisplayResolution"), uniforms.displayResolution);
   const mode = uniforms.toneMap === "aces" ? 1 : (uniforms.toneMap === "linear" ? 0 : 2);
   gl.uniform1i(gl.getUniformLocation(program, "uToneMapMode"), mode);
+  gl.uniform1i(gl.getUniformLocation(program, "uTransparentBg"), uniforms.transparentBg || 0);
 }
 
 export function drawFullscreen(gl) {

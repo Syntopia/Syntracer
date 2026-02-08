@@ -157,6 +157,20 @@ const volumeNegativeColorInput = document.getElementById("volumeNegativeColor");
 const volumeTransferPresetSelect = document.getElementById("volumeTransferPreset");
 const materialSection = materialSelect?.closest(".form-section") || null;
 
+const hiresModal = document.getElementById("hiresModal");
+const hiresForm = document.getElementById("hiresForm");
+const hiresProgress = document.getElementById("hiresProgress");
+const hiresWidthInput = document.getElementById("hiresWidth");
+const hiresHeightInput = document.getElementById("hiresHeight");
+const hiresIterationsInput = document.getElementById("hiresIterations");
+const hiresTransparentCheckbox = document.getElementById("hiresTransparent");
+const hiresRenderBtn = document.getElementById("hiresRenderBtn");
+const hiresStartBtn = document.getElementById("hiresStart");
+const hiresCloseBtn = document.getElementById("hiresClose");
+const hiresCancelBtn = document.getElementById("hiresCancel");
+const hiresProgressFill = document.getElementById("hiresProgressFill");
+const hiresProgressText = document.getElementById("hiresProgressText");
+
 const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
 const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
 
@@ -238,7 +252,9 @@ const renderState = {
   clipLockedNormal: null,
   clipLockedOffset: null,
   clipLockedSide: null,
-  visMode: 0
+  visMode: 0,
+  transparentBg: 0,
+  hiresMode: false
 };
 
 const envCache = new Map();
@@ -2456,19 +2472,27 @@ function renderFrame() {
   }
   const { gl, traceProgram, displayProgram, vao } = ensureWebGL();
 
-  const displayWidth = Math.max(1, Math.floor(canvas.clientWidth));
-  const displayHeight = Math.max(1, Math.floor(canvas.clientHeight));
-  const scale = renderState.scale;
-  const renderWidth = Math.max(1, Math.floor(displayWidth * scale));
-  const renderHeight = Math.max(1, Math.floor(displayHeight * scale));
+  let displayWidth, displayHeight, renderWidth, renderHeight;
+  if (renderState.hiresMode) {
+    displayWidth = canvas.width;
+    displayHeight = canvas.height;
+    renderWidth = displayWidth;
+    renderHeight = displayHeight;
+  } else {
+    displayWidth = Math.max(1, Math.floor(canvas.clientWidth));
+    displayHeight = Math.max(1, Math.floor(canvas.clientHeight));
+    const scale = renderState.scale;
+    renderWidth = Math.max(1, Math.floor(displayWidth * scale));
+    renderHeight = Math.max(1, Math.floor(displayHeight * scale));
 
-  if (renderWidth <= 1 || renderHeight <= 1) {
-    logger.warn(`Canvas size is too small: ${renderWidth}x${renderHeight}`);
-    return;
+    if (renderWidth <= 1 || renderHeight <= 1) {
+      logger.warn(`Canvas size is too small: ${renderWidth}x${renderHeight}`);
+      return;
+    }
+
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
   }
-
-  canvas.width = displayWidth;
-  canvas.height = displayHeight;
   cameraState.width = renderWidth;
   cameraState.height = renderHeight;
 
@@ -2706,11 +2730,21 @@ setTraceUniforms(gl, traceProgram, {
     clipNormal,
     clipOffset,
     clipSide,
-    visMode: renderState.visMode
+    visMode: renderState.visMode,
+    transparentBg: renderState.transparentBg
   });
 
   gl.useProgram(traceProgram);
   drawFullscreen(gl);
+
+  glState.frameParity = prevIndex;
+  renderState.frameIndex += 1;
+  renderState.cameraDirty = false;
+
+  // In hi-res mode, skip the display pass and UI updates — only accumulate
+  if (renderState.hiresMode) {
+    return;
+  }
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, displayWidth, displayHeight);
@@ -2719,15 +2753,12 @@ setTraceUniforms(gl, traceProgram, {
   setDisplayUniforms(gl, displayProgram, {
     displayUnit: 0,
     displayResolution: [displayWidth, displayHeight],
-    toneMap: renderState.toneMap
+    toneMap: renderState.toneMap,
+    transparentBg: renderState.transparentBg
   });
 
   gl.useProgram(displayProgram);
   drawFullscreen(gl);
-
-  glState.frameParity = prevIndex;
-  renderState.frameIndex += 1;
-  renderState.cameraDirty = false;
 
   if (renderOverlay && sceneData) {
     const maxFrames = renderState.maxFrames > 0 ? renderState.maxFrames : "∞";
@@ -2791,6 +2822,206 @@ function stopRenderLoop() {
     renderOverlay.style.display = "none";
   }
   logger.info("Paused.");
+}
+
+async function hiresRender() {
+  const width = Math.max(64, Math.min(8192, Number(hiresWidthInput.value) || 1920));
+  const height = Math.max(64, Math.min(8192, Number(hiresHeightInput.value) || 1080));
+  const iterations = Math.max(1, Math.min(10000, Number(hiresIterationsInput.value) || 100));
+  const transparent = hiresTransparentCheckbox.checked;
+
+  // Show progress UI
+  hiresForm.style.display = "none";
+  hiresProgress.style.display = "block";
+  hiresProgressFill.style.width = "0%";
+  hiresProgressText.textContent = `0 / ${iterations} — estimating...`;
+
+  // Pause interactive loop
+  stopRenderLoop();
+
+  // Save original state
+  const savedCanvasW = canvas.width;
+  const savedCanvasH = canvas.height;
+  const savedCamW = cameraState.width;
+  const savedCamH = cameraState.height;
+  const savedScale = renderState.scale;
+  const savedFrameIndex = renderState.frameIndex;
+  const savedFrameParity = glState.frameParity;
+  const savedHiresMode = renderState.hiresMode;
+  const savedTransparentBg = renderState.transparentBg;
+
+  // Override for hi-res
+  canvas.width = width;
+  canvas.height = height;
+  cameraState.width = width;
+  cameraState.height = height;
+  renderState.scale = 1;
+  renderState.frameIndex = 0;
+  renderState.cameraDirty = true;
+  renderState.hiresMode = true;
+  renderState.transparentBg = transparent ? 1 : 0;
+
+  const { gl } = ensureWebGL();
+
+  // Create dedicated accum targets at hi-res
+  const hiresAccum = createAccumTargets(gl, width, height);
+  const savedAccum = glState.accum;
+  glState.accum = hiresAccum;
+  glState.frameParity = 0;
+
+  let cancelled = false;
+  hiresCancelBtn.onclick = () => { cancelled = true; };
+
+  const startTime = performance.now();
+
+  for (let i = 0; i < iterations; i++) {
+    if (cancelled) break;
+
+    renderFrame();
+
+    // Update progress
+    const pct = ((i + 1) / iterations * 100).toFixed(1);
+    hiresProgressFill.style.width = pct + "%";
+    const elapsed = performance.now() - startTime;
+    const perFrame = elapsed / (i + 1);
+    const remaining = perFrame * (iterations - i - 1);
+    const etaStr = remaining > 60000
+      ? (remaining / 60000).toFixed(1) + " min"
+      : (remaining / 1000).toFixed(0) + " s";
+    hiresProgressText.textContent = `${i + 1} / ${iterations} — ${cancelled ? "cancelled" : etaStr + " remaining"}`;
+
+    // Yield to browser for repaint — requestAnimationFrame ensures a
+    // compositor frame, then setTimeout defers to the next task so the
+    // paint actually
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+  }
+
+  // Read pixels — render display pass to an offscreen RGBA8 framebuffer
+  if (!cancelled) {
+    const { displayProgram } = ensureWebGL();
+
+    const readTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const readFb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, readFb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, readTex, 0);
+
+    // The last renderFrame swapped frameParity, so the most recent result is at the OTHER index
+    const finalAccumIdx = (glState.frameParity + 1) % 2;
+    gl.viewport(0, 0, width, height);
+    createTextureUnit(gl, glState.accum.textures[finalAccumIdx], 0);
+    setDisplayUniforms(gl, displayProgram, {
+      displayUnit: 0,
+      displayResolution: [width, height],
+      toneMap: renderState.toneMap,
+      transparentBg: transparent ? 1 : 0
+    });
+    gl.useProgram(displayProgram);
+    drawFullscreen(gl);
+
+    // Read pixels
+    const pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    gl.deleteTexture(readTex);
+    gl.deleteFramebuffer(readFb);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Flip vertically (WebGL is bottom-up) and create PNG
+    const flipped = new Uint8Array(width * height * 4);
+    const rowSize = width * 4;
+    for (let y = 0; y < height; y++) {
+      flipped.set(pixels.subarray((height - 1 - y) * rowSize, (height - y) * rowSize), y * rowSize);
+    }
+
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = width;
+    tmpCanvas.height = height;
+    const ctx = tmpCanvas.getContext("2d");
+    const imgData = new ImageData(new Uint8ClampedArray(flipped.buffer), width, height);
+    ctx.putImageData(imgData, 0, 0);
+
+    tmpCanvas.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `render_${width}x${height}_${iterations}spp.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  }
+
+  // Restore state
+  renderState.transparentBg = savedTransparentBg;
+  renderState.hiresMode = savedHiresMode;
+  hiresAccum.textures.forEach(t => gl.deleteTexture(t));
+  hiresAccum.framebuffers.forEach(f => gl.deleteFramebuffer(f));
+  glState.accum = savedAccum;
+  glState.frameParity = savedFrameParity;
+  canvas.width = savedCanvasW;
+  canvas.height = savedCanvasH;
+  cameraState.width = savedCamW;
+  cameraState.height = savedCamH;
+  renderState.scale = savedScale;
+  renderState.frameIndex = 0;
+  renderState.cameraDirty = true;
+
+  // Close modal and restart
+  hiresModal.style.display = "none";
+  hiresForm.style.display = "block";
+  hiresProgress.style.display = "none";
+
+  startRenderLoop();
+}
+
+// Hi-res render modal wiring
+let hiresAspect = 16 / 9;
+
+if (hiresRenderBtn) {
+  hiresRenderBtn.onclick = () => {
+    // Compute aspect ratio from current canvas
+    const cw = canvas.clientWidth || 1920;
+    const ch = canvas.clientHeight || 1080;
+    hiresAspect = cw / ch;
+    const w = 1920;
+    const h = Math.round(w / hiresAspect);
+    hiresWidthInput.value = w;
+    hiresHeightInput.value = h;
+    hiresForm.style.display = "block";
+    hiresProgress.style.display = "none";
+    hiresModal.style.display = "flex";
+  };
+}
+
+if (hiresWidthInput) {
+  hiresWidthInput.addEventListener("input", () => {
+    const w = Number(hiresWidthInput.value);
+    if (w >= 64 && w <= 8192) {
+      hiresHeightInput.value = Math.round(w / hiresAspect);
+    }
+  });
+}
+
+if (hiresHeightInput) {
+  hiresHeightInput.addEventListener("input", () => {
+    const h = Number(hiresHeightInput.value);
+    if (h >= 64 && h <= 8192) {
+      hiresWidthInput.value = Math.round(h * hiresAspect);
+    }
+  });
+}
+
+if (hiresStartBtn) {
+  hiresStartBtn.onclick = () => hiresRender();
+}
+
+if (hiresCloseBtn) {
+  hiresCloseBtn.onclick = () => {
+    hiresModal.style.display = "none";
+  };
 }
 
 async function loadExampleScene(url) {

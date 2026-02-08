@@ -611,6 +611,57 @@
         align-self: flex-end;
       }
 
+      /* Hi-res render modal */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+      }
+      .modal-content {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+        min-width: 320px;
+        max-width: 400px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      }
+      .modal-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 16px;
+      }
+      .hires-form label {
+        margin-bottom: 8px;
+      }
+      .hires-form input[type="number"] {
+        margin-bottom: 12px;
+      }
+      .progress-bar {
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 8px;
+      }
+      .progress-fill {
+        height: 100%;
+        background: var(--accent);
+        width: 0%;
+        transition: width 0.2s ease;
+        border-radius: 3px;
+      }
+      .progress-text {
+        font-size: 12px;
+        color: var(--fg-muted);
+        margin-bottom: 8px;
+        font-family: "SF Mono", Monaco, monospace;
+      }
+
       /* Responsive */
       @media (max-width: 900px) {
         .app {
@@ -703,6 +754,10 @@
 
           <!-- RENDER TAB -->
           <div class="tab-panel" data-tab-panel="render">
+            <div class="form-section">
+              <button id="hiresRenderBtn" type="button" class="secondary">Render Image...</button>
+            </div>
+
             <div class="form-section">
               <details class="collapsible">
                 <summary>Environment</summary>
@@ -1536,6 +1591,30 @@
         <div class="render-overlay" id="renderOverlay"></div>
         <div class="loading-overlay" id="loadingOverlay">Loading...</div>
       </main>
+    </div>
+
+    <div id="hiresModal" class="modal-overlay" style="display:none">
+      <div class="modal-content">
+        <div class="modal-title">Render Image</div>
+        <div class="hires-form" id="hiresForm">
+          <label>Width <input id="hiresWidth" type="number" min="64" max="8192" value="1920"></label>
+          <label>Height <input id="hiresHeight" type="number" min="64" max="8192" value="1080"></label>
+          <label>Iterations <input id="hiresIterations" type="number" min="1" max="10000" value="100"></label>
+          <div class="checkbox-group">
+            <input id="hiresTransparent" type="checkbox">
+            <label for="hiresTransparent">Transparent background</label>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button id="hiresStart" type="button">Render</button>
+            <button id="hiresClose" type="button" class="secondary">Cancel</button>
+          </div>
+        </div>
+        <div class="hires-progress" id="hiresProgress" style="display:none">
+          <div class="progress-bar"><div class="progress-fill" id="hiresProgressFill"></div></div>
+          <div class="progress-text" id="hiresProgressText">0 / 100 — estimating...</div>
+          <button id="hiresCancel" type="button" class="secondary">Cancel</button>
+        </div>
+      </div>
     </div>
 
     <script>
