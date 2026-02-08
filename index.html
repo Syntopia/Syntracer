@@ -133,109 +133,113 @@
       .scene-graph-tree {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 1px;
       }
       .scene-graph-group {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 0;
         padding: 0;
       }
       .scene-graph-group + .scene-graph-group {
-        margin-top: 2px;
-        padding-top: 6px;
-        border-top: 1px solid rgba(148, 163, 184, 0.22);
+        margin-top: 1px;
       }
       .scene-graph-row {
         display: flex;
         align-items: center;
-        gap: 7px;
+        gap: 4px;
         border: 1px solid transparent;
-        border-radius: var(--radius-sm);
-        padding: 6px 8px;
-        min-height: 30px;
+        border-radius: 3px;
+        padding: 2px 6px;
+        height: 24px;
         cursor: pointer;
         position: relative;
-        transition: background 0.12s ease, border-color 0.12s ease;
+        transition: background 0.1s ease, border-color 0.1s ease;
       }
       .scene-graph-row:hover {
         background: rgba(148, 163, 184, 0.08);
       }
       .scene-graph-row.selected {
         border-color: var(--accent);
-        background: rgba(96, 165, 250, 0.14);
+        background: rgba(96, 165, 250, 0.12);
       }
       .scene-graph-row input[type="checkbox"] {
-        width: 14px;
-        height: 14px;
+        width: 13px;
+        height: 13px;
         margin: 0;
+        flex-shrink: 0;
         accent-color: #60a5fa;
       }
       .scene-graph-toggle {
-        width: 16px;
-        height: 16px;
+        width: 14px;
+        height: 14px;
         border: none;
         background: transparent;
         color: var(--fg-muted);
         padding: 0;
-        font-size: 10px;
+        font-size: 9px;
         line-height: 1;
         cursor: pointer;
-        border-radius: 3px;
+        border-radius: 2px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       .scene-graph-toggle:hover {
         background: rgba(148, 163, 184, 0.18);
         color: var(--fg);
       }
       .scene-graph-toggle-spacer {
-        width: 16px;
-        height: 16px;
+        width: 14px;
+        height: 14px;
         display: inline-block;
         flex-shrink: 0;
       }
       .scene-graph-children {
-        margin-left: 16px;
-        padding-left: 10px;
-        border-left: 1px solid rgba(148, 163, 184, 0.35);
+        margin-left: 7px;
+        padding-left: 12px;
+        border-left: 1px solid rgba(148, 163, 184, 0.18);
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 0;
       }
       .scene-graph-row.rep::before {
         content: "";
         position: absolute;
-        left: -10px;
+        left: -12px;
         top: 50%;
-        width: 8px;
-        border-top: 1px solid rgba(148, 163, 184, 0.35);
+        width: 10px;
+        border-top: 1px solid rgba(148, 163, 184, 0.18);
       }
       .scene-graph-row.object .scene-graph-label-main {
         font-weight: 600;
       }
       .scene-graph-row.rep .scene-graph-label-main {
-        font-weight: 500;
+        font-weight: 400;
       }
       .scene-graph-label {
         flex: 1;
         min-width: 0;
         display: flex;
         align-items: baseline;
-        gap: 6px;
+        gap: 5px;
         user-select: none;
       }
       .scene-graph-label-main {
-        font-size: 12px;
+        font-size: 11.5px;
         color: var(--fg);
-        line-height: 1.2;
+        line-height: 1;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .scene-graph-label-meta {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--fg-muted);
-        line-height: 1.2;
+        line-height: 1;
         white-space: nowrap;
+        opacity: 0.7;
       }
       .representation-actions {
         display: flex;
@@ -1233,7 +1237,7 @@
               <select id="pdbDisplayStyle">
                 <option value="ball-and-stick" selected>Ball and Stick</option>
                 <option value="vdw">Van der Waals (Space-filling)</option>
-                <option value="stick">Stick only</option>
+                <option value="stick">Stick</option>
                 <option value="cartoon">Cartoon (Backbone)</option>
                 <option value="ses">Solvent-Excluded Surface (SES)</option>
                 <option value="isosurface">Isosurface</option>
@@ -1335,8 +1339,8 @@
                 <div style="height: 8px"></div>
                 <label for="volumeValueMax">Value window max (normalized)</label>
                 <div class="slider-input">
-                  <input id="volumeValueMax" type="range" min="0.01" max="1.00" step="0.01" value="1.00" />
-                  <input type="text" class="value-input" data-for="volumeValueMax" value="1.00" />
+                  <input id="volumeValueMax" type="range" min="0.01" max="1.00" step="0.01" value="0.72" />
+                  <input type="text" class="value-input" data-for="volumeValueMax" value="0.72" />
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="volumeValueMax">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="volumeValueMax">◀</button>
@@ -1357,8 +1361,8 @@
                 <div style="height: 8px"></div>
                 <label for="volumeStepSize">Step size (Å)</label>
                 <div class="slider-input">
-                  <input id="volumeStepSize" type="range" min="0.05" max="2.00" step="0.05" value="0.50" />
-                  <input type="text" class="value-input" data-for="volumeStepSize" value="0.50" />
+                  <input id="volumeStepSize" type="range" min="0.05" max="2.00" step="0.05" value="0.20" />
+                  <input type="text" class="value-input" data-for="volumeStepSize" value="0.20" />
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="volumeStepSize">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="volumeStepSize">◀</button>
@@ -1366,9 +1370,18 @@
                 </div>
 
                 <div style="height: 8px"></div>
+                <label for="volumePositiveColor">Positive volume color</label>
+                <input id="volumePositiveColor" type="color" value="#26d933" />
+
+                <div style="height: 8px"></div>
+                <label for="volumeNegativeColor">Negative volume color</label>
+                <input id="volumeNegativeColor" type="color" value="#e63333" />
+
+                <div style="height: 8px"></div>
                 <label for="volumeTransferPreset">Transfer preset</label>
                 <select id="volumeTransferPreset">
-                  <option value="grayscale" selected>Grayscale</option>
+                  <option value="orbital" selected>Orbital</option>
+                  <option value="grayscale">Grayscale</option>
                   <option value="heatmap">Heatmap</option>
                 </select>
               </div>
