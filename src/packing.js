@@ -415,6 +415,7 @@ export function packMaterialTable(materials, maxTextureSize) {
       `materials[${i}].matteDiffuseRoughness`
     );
     const wrapDiffuse = asFiniteNumber(material.wrapDiffuse, `materials[${i}].wrapDiffuse`);
+    const opacity = asFiniteNumber(material.opacity ?? 1.0, `materials[${i}].opacity`);
     const surfaceIor = asFiniteNumber(material.surfaceIor, `materials[${i}].surfaceIor`);
     const surfaceTransmission = asFiniteNumber(material.surfaceTransmission, `materials[${i}].surfaceTransmission`);
     const surfaceOpacity = asFiniteNumber(material.surfaceOpacity, `materials[${i}].surfaceOpacity`);
@@ -424,7 +425,7 @@ export function packMaterialTable(materials, maxTextureSize) {
     writeTexel(data, base + 0, [mode, metallic, roughness, rimBoost]);
     writeTexel(data, base + 1, [matteSpecular, matteRoughness, matteDiffuseRoughness, wrapDiffuse]);
     writeTexel(data, base + 2, [surfaceIor, surfaceTransmission, surfaceOpacity, useImportedColor]);
-    writeTexel(data, base + 3, [baseColor[0], baseColor[1], baseColor[2], 0]);
+    writeTexel(data, base + 3, [baseColor[0], baseColor[1], baseColor[2], opacity]);
   }
 
   return {

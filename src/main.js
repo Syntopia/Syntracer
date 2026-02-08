@@ -15,11 +15,13 @@ import { hasSurfaceFlags } from "./scene_controller.js";
 import { formatPolyCount, cameraRelativeLightDir } from "./renderer_controller.js";
 import {
   parseAutoDetect,
+  parseCubeFile,
   fetchPDB,
   getBuiltinMolecule
 } from "./molecular.js";
 import {
   createSceneGraphFromMolData,
+  appendSceneGraphFromMolData,
   addRepresentationToObject,
   updateRepresentation,
   selectObject,
@@ -30,10 +32,11 @@ import {
   findRepresentation,
   findObject,
   cloneMaterial,
-  cloneDisplay
+  cloneDisplay,
+  displayStylesForObjectType,
+  SCENE_OBJECT_TYPES
 } from "./scene_graph.js";
 import { compileSceneGraphGeometry, findPrimitivePickRange } from "./scene_graph_compile.js";
-import { buildNitrogenDensityVolume } from "./volume.js";
 import {
   initWebGL,
   createDataTexture,
@@ -63,6 +66,9 @@ const exampleSelect = document.getElementById("exampleSelect");
 const loadExampleBtn = document.getElementById("loadExample");
 const envSelect = document.getElementById("envSelect");
 const envIntensityInput = document.getElementById("envIntensity");
+const envUniformColorInput = document.getElementById("uniformEnvColor");
+const envRotationInput = document.getElementById("envRotation");
+const envRotationVerticalInput = document.getElementById("envRotationVertical");
 const envMaxLumInput = document.getElementById("envMaxLum");
 const analyticSkyResolutionSelect = document.getElementById("analyticSkyResolution");
 const analyticSkyTurbidityInput = document.getElementById("analyticSkyTurbidity");
@@ -84,9 +90,6 @@ const pdbAtomScale = document.getElementById("pdbAtomScale");
 const pdbBondRadius = document.getElementById("pdbBondRadius");
 const probeRadiusInput = document.getElementById("probeRadius");
 const surfaceResolutionInput = document.getElementById("surfaceResolution");
-const volumeImportToggle = document.getElementById("volumeImportToggle");
-const volumeGridSpacing = document.getElementById("volumeGridSpacing");
-const volumeGaussianScale = document.getElementById("volumeGaussianScale");
 const clipEnableToggle = document.getElementById("clipEnable");
 const clipDistanceInput = document.getElementById("clipDistance");
 const clipLockToggle = document.getElementById("clipLock");
@@ -96,6 +99,7 @@ const materialSelect = document.getElementById("materialSelect");
 const metallicInput = document.getElementById("metallic");
 const roughnessInput = document.getElementById("roughness");
 const rimBoostInput = document.getElementById("rimBoost");
+const metallicOpacityInput = document.getElementById("metallicOpacity");
 const matteSpecularInput = document.getElementById("matteSpecular");
 const matteRoughnessInput = document.getElementById("matteRoughness");
 const matteDiffuseRoughnessInput = document.getElementById("matteDiffuseRoughness");
@@ -139,6 +143,17 @@ const displayAtomControls = document.querySelector(".display-atom-controls");
 const displayBondControls = document.querySelector(".display-bond-controls");
 const displayCartoonControls = document.querySelector(".display-cartoon-controls");
 const displaySesControls = document.querySelector(".display-ses-controls");
+const displayIsosurfaceControls = document.querySelector(".display-isosurface-controls");
+const displayVolumeControls = document.querySelector(".display-volume-controls");
+const isoLevelInput = document.getElementById("isoLevel");
+const isoPositiveColorInput = document.getElementById("isoPositiveColor");
+const isoNegativeColorInput = document.getElementById("isoNegativeColor");
+const volumeValueMinInput = document.getElementById("volumeValueMin");
+const volumeValueMaxInput = document.getElementById("volumeValueMax");
+const volumeOpacityScaleInput = document.getElementById("volumeOpacityScale");
+const volumeStepSizeInput = document.getElementById("volumeStepSize");
+const volumeTransferPresetSelect = document.getElementById("volumeTransferPreset");
+const materialSection = materialSelect?.closest(".form-section") || null;
 
 const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
 const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
@@ -174,6 +189,7 @@ const renderState = {
   metallic: 0.0,
   roughness: 0.4,
   rimBoost: 0.2,
+  opacity: 1.0,
   matteSpecular: 0.03,
   matteRoughness: 0.5,
   matteDiffuseRoughness: 0.5,
@@ -193,6 +209,8 @@ const renderState = {
   envUrl: null,
   envCacheKey: null,
   envIntensity: 0.1,
+  envRotationDeg: 0.0,
+  envRotationVerticalDeg: 0.0,
   envMaxLuminance: 200.0,
   envData: null,
   rayBias: 1e-5,
@@ -248,7 +266,8 @@ const OBJECT_TYPE_LABELS = Object.freeze({
   protein: "Protein",
   ligand: "Ligand",
   water: "Water",
-  "metal-ions": "Metal ions"
+  "metal-ions": "Metal ions",
+  volume: "Volume"
 });
 
 function snapshotCurrentMaterial() {
@@ -259,6 +278,7 @@ function snapshotCurrentMaterial() {
     metallic: renderState.metallic,
     roughness: renderState.roughness,
     rimBoost: renderState.rimBoost,
+    opacity: renderState.opacity,
     matteSpecular: renderState.matteSpecular,
     matteRoughness: renderState.matteRoughness,
     matteDiffuseRoughness: renderState.matteDiffuseRoughness,
@@ -333,6 +353,8 @@ function loadTestPrimitives() {
     spheres,
     cylinders,
     sceneScale: 1.0,
+    volume: null,
+    volumeDisplay: null,
     pickRanges: null,
     materials: [material],
     triMaterialIndices,
@@ -477,6 +499,8 @@ function loadRandomSpheres(count) {
     spheres,
     cylinders,
     sceneScale: 1.0,
+    volume: null,
+    volumeDisplay: null,
     pickRanges: null,
     materials: [material],
     triMaterialIndices,
@@ -563,8 +587,19 @@ window.loadRandomSpheres = loadRandomSpheres;
 function inferSourceKind(filename) {
   const ext = String(filename || "").toLowerCase();
   if (ext.endsWith(".pdb")) return "pdb";
+  if (ext.endsWith(".cube")) return "cube";
   if (ext.endsWith(".sdf") || ext.endsWith(".mol")) return "sdf";
-  return "pdb";
+  return null;
+}
+
+function requireSupportedImportFilename(filename) {
+  const lower = String(filename || "").toLowerCase();
+  const supported = [".pdb", ".sdf", ".mol", ".cube"];
+  if (!supported.some((ext) => lower.endsWith(ext))) {
+    throw new Error(
+      `Unsupported file format for "${filename}". Supported formats: ${supported.join(", ")}.`
+    );
+  }
 }
 
 function getDisplaySettingsFromControls() {
@@ -573,11 +608,28 @@ function getDisplaySettingsFromControls() {
   const bondRadius = requireNumberInput(pdbBondRadius, "Bond radius");
   const probeRadius = requireNumberInput(probeRadiusInput, "Probe radius");
   const surfaceResolution = requireNumberInput(surfaceResolutionInput, "Surface resolution");
+  const isoLevel = requireNumberInput(isoLevelInput, "Iso-level");
+  if (!isoPositiveColorInput) throw new Error("Positive isosurface color input is missing.");
+  if (!isoNegativeColorInput) throw new Error("Negative isosurface color input is missing.");
+  const isoPositiveColor = hexToRgb(isoPositiveColorInput.value);
+  const isoNegativeColor = hexToRgb(isoNegativeColorInput.value);
+  const volumeValueMin = requireNumberInput(volumeValueMinInput, "Volume value window min");
+  const volumeValueMax = requireNumberInput(volumeValueMaxInput, "Volume value window max");
+  const volumeOpacityScale = requireNumberInput(volumeOpacityScaleInput, "Volume opacity scale");
+  const volumeStepSize = requireNumberInput(volumeStepSizeInput, "Volume step size");
+  const volumeTransferPreset = String(volumeTransferPresetSelect?.value || "grayscale");
 
   if (atomScale <= 0) throw new Error("Atom radius scale must be > 0.");
   if (bondRadius < 0) throw new Error("Bond radius must be >= 0.");
   if (probeRadius <= 0) throw new Error("Probe radius must be > 0.");
   if (surfaceResolution <= 0) throw new Error("Surface resolution must be > 0.");
+  if (isoLevel < 0 || isoLevel > 1) throw new Error("Iso-level must be between 0 and 1.");
+  if (volumeValueMin >= volumeValueMax) throw new Error("Volume value window min must be less than max.");
+  if (volumeOpacityScale < 0) throw new Error("Volume opacity scale must be >= 0.");
+  if (volumeStepSize <= 0) throw new Error("Volume step size must be > 0.");
+  if (!["grayscale", "heatmap"].includes(volumeTransferPreset)) {
+    throw new Error(`Unsupported volume transfer preset: ${volumeTransferPreset}`);
+  }
 
   return {
     style,
@@ -585,6 +637,14 @@ function getDisplaySettingsFromControls() {
     bondRadius,
     probeRadius,
     surfaceResolution,
+    isoLevel,
+    isoPositiveColor,
+    isoNegativeColor,
+    volumeValueMin,
+    volumeValueMax,
+    volumeOpacityScale,
+    volumeStepSize,
+    volumeTransferPreset,
     showSheetHbonds: showSheetHbondsToggle?.checked || false
   };
 }
@@ -595,6 +655,7 @@ function getMaterialSettingsFromControls() {
     metallic: clamp(Number(metallicInput?.value ?? 0.0), 0.0, 1.0),
     roughness: clamp(Number(roughnessInput?.value ?? 0.4), 0.02, 1.0),
     rimBoost: clamp(Number(rimBoostInput?.value ?? 0.2), 0.0, 1.0),
+    opacity: clamp(Number(metallicOpacityInput?.value ?? 1.0), 0.0, 1.0),
     matteSpecular: clamp(Number(matteSpecularInput?.value ?? 0.03), 0.0, 0.08),
     matteRoughness: clamp(Number(matteRoughnessInput?.value ?? 0.5), 0.1, 1.0),
     matteDiffuseRoughness: clamp(Number(matteDiffuseRoughnessInput?.value ?? 0.5), 0.0, 1.0),
@@ -613,6 +674,7 @@ function applyMaterialToRenderState(material) {
   renderState.metallic = normalized.metallic;
   renderState.roughness = normalized.roughness;
   renderState.rimBoost = normalized.rimBoost;
+  renderState.opacity = normalized.opacity;
   renderState.matteSpecular = normalized.matteSpecular;
   renderState.matteRoughness = normalized.matteRoughness;
   renderState.matteDiffuseRoughness = normalized.matteDiffuseRoughness;
@@ -624,6 +686,8 @@ function applyMaterialToRenderState(material) {
 
 function updateDisplayControlsVisibility() {
   const style = String(pdbDisplayStyle?.value || "ball-and-stick");
+  const selectedObject = getSelectedObject();
+  const selectedType = selectedObject?.type || null;
   if (displayAtomControls) {
     displayAtomControls.style.display = style === "ball-and-stick" ? "block" : "none";
   }
@@ -636,6 +700,33 @@ function updateDisplayControlsVisibility() {
   if (displaySesControls) {
     displaySesControls.style.display = style === "ses" ? "block" : "none";
   }
+  if (displayIsosurfaceControls) {
+    displayIsosurfaceControls.style.display = style === "isosurface" ? "block" : "none";
+  }
+  if (displayVolumeControls) {
+    displayVolumeControls.style.display = style === "volumetric" ? "block" : "none";
+  }
+  if (materialSection) {
+    const hideMaterialForVolumetric = selectedType === SCENE_OBJECT_TYPES.VOLUME && style === "volumetric";
+    materialSection.style.display = hideMaterialForVolumetric ? "none" : "block";
+  }
+}
+
+function updateDisplayStyleOptionsForObjectType(objectType) {
+  if (!pdbDisplayStyle || !objectType) return;
+  const allowed = new Set(displayStylesForObjectType(objectType));
+  for (const option of Array.from(pdbDisplayStyle.options)) {
+    const enabled = allowed.has(option.value);
+    option.hidden = !enabled;
+    option.disabled = !enabled;
+  }
+  if (!allowed.has(pdbDisplayStyle.value)) {
+    const firstAllowed = Array.from(pdbDisplayStyle.options).find((opt) => allowed.has(opt.value));
+    if (!firstAllowed) {
+      throw new Error(`No display styles available for object type ${objectType}.`);
+    }
+    pdbDisplayStyle.value = firstAllowed.value;
+  }
 }
 
 function autoRepresentationName(display, material) {
@@ -646,8 +737,13 @@ function autoRepresentationName(display, material) {
     vdw: "Spacefill",
     stick: "Stick",
     cartoon: "Cartoon",
-    ses: "SES"
+    ses: "SES",
+    isosurface: "Isosurface",
+    volumetric: "Volumetric"
   })[style] || style;
+  if (style === "volumetric") {
+    return styleLabel;
+  }
   const materialLabel = ({
     metallic: "Metallic",
     matte: "Matte",
@@ -665,6 +761,20 @@ function applyRepresentationToControls(representation, objectType) {
   setSliderValue(pdbBondRadius, display.bondRadius);
   setSliderValue(probeRadiusInput, display.probeRadius);
   setSliderValue(surfaceResolutionInput, display.surfaceResolution);
+  setSliderValue(isoLevelInput, display.isoLevel);
+  if (isoPositiveColorInput) {
+    isoPositiveColorInput.value = rgbToHex(display.isoPositiveColor);
+  }
+  if (isoNegativeColorInput) {
+    isoNegativeColorInput.value = rgbToHex(display.isoNegativeColor);
+  }
+  setSliderValue(volumeValueMinInput, display.volumeValueMin);
+  setSliderValue(volumeValueMaxInput, display.volumeValueMax);
+  setSliderValue(volumeOpacityScaleInput, display.volumeOpacityScale);
+  setSliderValue(volumeStepSizeInput, display.volumeStepSize);
+  if (volumeTransferPresetSelect) {
+    volumeTransferPresetSelect.value = display.volumeTransferPreset;
+  }
   if (showSheetHbondsToggle) showSheetHbondsToggle.checked = Boolean(display.showSheetHbonds);
   updateDisplayControlsVisibility();
 
@@ -673,6 +783,7 @@ function applyRepresentationToControls(representation, objectType) {
   setSliderValue(metallicInput, material.metallic);
   setSliderValue(roughnessInput, material.roughness);
   setSliderValue(rimBoostInput, material.rimBoost);
+  setSliderValue(metallicOpacityInput, material.opacity);
   setSliderValue(matteSpecularInput, material.matteSpecular);
   setSliderValue(matteRoughnessInput, material.matteRoughness);
   setSliderValue(matteDiffuseRoughnessInput, material.matteDiffuseRoughness);
@@ -711,6 +822,11 @@ function updateRepresentationControlsFromSelection() {
   const selectedRep = getSelectedRepresentation();
   const selectedObject = getSelectedObject();
   if (!selectedObject) {
+    for (const option of Array.from(pdbDisplayStyle?.options || [])) {
+      option.hidden = false;
+      option.disabled = false;
+    }
+    updateDisplayControlsVisibility();
     if (representationSelectionHint) {
       representationSelectionHint.textContent = "Select an object or representation in Scene Graph.";
     }
@@ -722,6 +838,7 @@ function updateRepresentationControlsFromSelection() {
   }
 
   const objectLabel = selectedObject.label || selectedObject.type;
+  updateDisplayStyleOptionsForObjectType(selectedObject.type);
   if (selectedRep) {
     if (representationSelectionHint) {
       representationSelectionHint.textContent = `Selected: ${objectLabel} / ${selectedRep.representation.name}`;
@@ -739,6 +856,7 @@ function updateRepresentationControlsFromSelection() {
       representationActionBtn.disabled = false;
       representationActionBtn.textContent = "Add representation";
     }
+    updateDisplayControlsVisibility();
   }
 }
 
@@ -839,7 +957,7 @@ async function rebuildSceneFromSceneGraph(options = {}) {
   logger.info(`BVH built in ${bvhTime.toFixed(1)}ms: ${bvh.nodes.length} nodes`);
 
   const flat = flattenBVH(bvh.nodes, bvh.primitives, bvh.triCount, bvh.sphereCount, bvh.cylinderCount);
-  const volumeData = currentMolMeta?.volumeData || null;
+  const volumeData = compiled.volumeData || null;
 
   sceneData = {
     positions,
@@ -859,6 +977,7 @@ async function rebuildSceneFromSceneGraph(options = {}) {
     cylinders: displayCylinders,
     sceneScale: 1.0,
     volume: volumeData,
+    volumeDisplay: compiled.volumeDisplay || null,
     pickRanges: compiled.pickRanges,
     materials: compiled.materials,
     triMaterialIndices: compiled.triMaterialIndices,
@@ -1031,70 +1150,85 @@ function requireNumberInput(input, label) {
   return value;
 }
 
-function getVolumeImportOptions({ requireEnabled = false } = {}) {
-  if (!volumeImportToggle) {
-    throw new Error("Volume import toggle is missing.");
+function parseMolecularImport(text, filename) {
+  logger.info(`Parsing molecular file: ${filename}`);
+  requireSupportedImportFilename(filename);
+
+  const sourceKind = inferSourceKind(filename);
+  if (!sourceKind) {
+    throw new Error(`Unsupported source kind for file: ${filename}`);
   }
-  const enabled = volumeImportToggle.checked;
-  if (!enabled && !requireEnabled) {
-    return { enabled: false };
+  let molData = null;
+  let volumeData = null;
+
+  if (sourceKind === "cube") {
+    const parsedCube = parseCubeFile(text);
+    molData = parsedCube.molData;
+    volumeData = parsedCube.volumeData;
+  } else {
+    molData = parseAutoDetect(text, filename);
+    volumeData = null;
   }
 
-  const spacing = requireNumberInput(volumeGridSpacing, "Volume grid spacing");
-  const gaussianScale = requireNumberInput(volumeGaussianScale, "Gaussian scale");
-
-  if (spacing <= 0) {
-    throw new Error("Volume grid spacing must be > 0.");
-  }
-  if (gaussianScale <= 0) {
-    throw new Error("Gaussian scale must be > 0.");
+  logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
+  if (volumeData) {
+    const [nx, ny, nz] = volumeData.dims;
+    logger.info(`Parsed volume grid: ${nx}x${ny}x${nz}`);
   }
 
-  return { enabled: true, spacing, gaussianScale };
+  return { sourceKind, molData, volumeData };
 }
 
-function isLikelyPdbSource(filename, molData) {
-  if (filename && filename.toLowerCase().endsWith(".pdb")) {
-    return true;
+function appendParsedImportToSceneGraph(parsedImport) {
+  if (!parsedImport || !parsedImport.molData) {
+    throw new Error("Parsed import payload is invalid.");
   }
-  return Boolean(molData && molData.secondary);
+  const { sourceKind, molData, volumeData } = parsedImport;
+  const options = {
+    sourceKind,
+    volumeGrids: volumeData ? [volumeData] : []
+  };
+
+  if (!sceneGraph || !Array.isArray(sceneGraph.objects) || sceneGraph.objects.length === 0) {
+    sceneGraph = createSceneGraphFromMolData(molData, options);
+  } else {
+    appendSceneGraphFromMolData(sceneGraph, molData, options);
+  }
+
+  currentMolMeta = { sourceKind, volumeData };
 }
 
-function buildNitrogenVolume(molData, volumeOpts) {
-  logger.info(
-    `Building nitrogen density volume (spacing=${volumeOpts.spacing}Å, gaussian=3xVdW, scale=${volumeOpts.gaussianScale})...`
-  );
-  const start = performance.now();
-  const volume = buildNitrogenDensityVolume(molData, {
-    spacing: volumeOpts.spacing,
-    gaussianScale: volumeOpts.gaussianScale,
-    cutoffSigma: 3.0
-  });
-  const elapsed = performance.now() - start;
-  const [nx, ny, nz] = volume.dims;
-  logger.info(
-    `Volume built in ${elapsed.toFixed(0)}ms: ${nx}x${ny}x${nz}, N atoms=${volume.nitrogenCount}, max=${volume.maxValue.toFixed(3)}`
-  );
-  return volume;
+async function importMolecularFiles(files, options = {}) {
+  const fileList = Array.from(files || []);
+  if (fileList.length === 0) {
+    throw new Error("No files provided for import.");
+  }
+
+  const parsedImports = [];
+  for (const file of fileList) {
+    const text = await file.text();
+    parsedImports.push({
+      fileName: file.name,
+      parsed: parseMolecularImport(text, file.name)
+    });
+  }
+
+  const hadScene = Boolean(sceneGraph && Array.isArray(sceneGraph.objects) && sceneGraph.objects.length > 0);
+  const shouldFitCamera = options.fitCamera ?? !hadScene;
+
+  for (const item of parsedImports) {
+    appendParsedImportToSceneGraph(item.parsed);
+    logger.info(`Imported ${item.fileName} and appended to Scene Graph.`);
+  }
+
+  renderSceneGraphTree();
+  await rebuildSceneFromSceneGraph({ fitCamera: shouldFitCamera });
+  logger.info(`Import complete. Added ${parsedImports.length} file(s) to Scene Graph.`);
 }
 
 async function loadMolecularFile(text, filename) {
-  logger.info(`Parsing molecular file: ${filename}`);
-
-  const molData = parseAutoDetect(text, filename);
-  logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
-
-  const volumeOpts = getVolumeImportOptions();
-  let volumeData = null;
-  if (volumeOpts.enabled) {
-    if (!isLikelyPdbSource(filename, molData)) {
-      throw new Error("Volume import is only supported for PDB files.");
-    }
-    volumeData = buildNitrogenVolume(molData, volumeOpts);
-  }
-  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: inferSourceKind(filename) });
-  currentMolMeta = { sourceKind: inferSourceKind(filename), volumeData };
-  repGeometryCache.clear();
+  const parsed = parseMolecularImport(text, filename);
+  appendParsedImportToSceneGraph(parsed);
   renderSceneGraphTree();
   await rebuildSceneFromSceneGraph({ fitCamera: true });
   logger.info("Molecular structure loaded.");
@@ -1108,9 +1242,11 @@ async function loadPDBById(pdbId) {
   const molData = await fetchPDB(pdbId);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
 
-  const volumeOpts = getVolumeImportOptions();
-  const volumeData = volumeOpts.enabled ? buildNitrogenVolume(molData, volumeOpts) : null;
-  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: "pdb" });
+  const volumeData = null;
+  sceneGraph = createSceneGraphFromMolData(molData, {
+    sourceKind: "pdb",
+    volumeGrids: []
+  });
   currentMolMeta = { sourceKind: "pdb", volumeData };
   repGeometryCache.clear();
   renderSceneGraphTree();
@@ -1124,7 +1260,10 @@ async function loadBuiltinMolecule(name) {
   logger.info(`Loading built-in molecule: ${name}`);
   const molData = getBuiltinMolecule(name);
   logger.info(`Parsed ${molData.atoms.length} atoms, ${molData.bonds.length} bonds`);
-  sceneGraph = createSceneGraphFromMolData(molData, { sourceKind: "sdf" });
+  sceneGraph = createSceneGraphFromMolData(molData, {
+    sourceKind: "sdf",
+    volumeGrids: []
+  });
   currentMolMeta = { sourceKind: "sdf", volumeData: null };
   repGeometryCache.clear();
   renderSceneGraphTree();
@@ -1202,6 +1341,17 @@ function hexToRgb(hex) {
   const g = parseInt(value.slice(2, 4), 16);
   const b = parseInt(value.slice(4, 6), 16);
   return [r / 255, g / 255, b / 255];
+}
+
+function rgbToHex(rgb) {
+  if (!Array.isArray(rgb) || rgb.length !== 3) {
+    return "#ffffff";
+  }
+  const toChannel = (v) => {
+    const n = Math.max(0, Math.min(255, Math.round(Number(v) * 255)));
+    return n.toString(16).padStart(2, "0");
+  };
+  return `#${toChannel(rgb[0])}${toChannel(rgb[1])}${toChannel(rgb[2])}`;
 }
 
 // Deprecated: kept for potential world-space lights.
@@ -1290,7 +1440,7 @@ function updateVolumeState() {
   renderState.volumeThreshold = threshold;
 
   if (renderState.volumeEnabled && sceneData && !sceneData.volume) {
-    logger.warn("Volume enabled but no volume data is available. Reimport a PDB with volume enabled.");
+    logger.warn("Volume enabled but no volume data is available. Enable a volumetric representation.");
   }
 
   resetAccumulation("Volume settings updated.");
@@ -1302,10 +1452,15 @@ function applyMaterialPreset(mode) {
   setSliderValue(metallicInput, 0.0);
   setSliderValue(roughnessInput, 0.22);
   setSliderValue(rimBoostInput, 0.0);
-  setSliderValue(surfaceIorInput, 1.46);
+  setSliderValue(surfaceIorInput, 1.0);
   setSliderValue(surfaceTransmissionInput, 0.55);
   setSliderValue(surfaceOpacityInput, 0.15);
   logger.info("Applied preset: Translucent Plastic");
+}
+
+function mapVolumeTransferPresetToUniform(preset) {
+  if (preset === "heatmap") return 1;
+  return 0;
 }
 
 function buildRepresentationPatchFromUi(objectType) {
@@ -1398,6 +1553,9 @@ function updateClipState({ preserveLock = false } = {}) {
 const environmentController = createEnvironmentController({
   envSelect,
   envIntensityInput,
+  envUniformColorInput,
+  envRotationInput,
+  envRotationVerticalInput,
   envMaxLumInput,
   analyticSkyResolutionSelect,
   analyticSkyTurbidityInput,
@@ -2098,15 +2256,40 @@ function renderFrame() {
     uploadEnvironmentToGl(renderState.envData);
   }
 
-  let volumeEnabled = renderState.volumeEnabled ? 1 : 0;
+  const volumetricDisplay = sceneData.volumeDisplay || null;
+  const hasVolumetricRepresentation = Boolean(
+    sceneData.volume
+    && volumetricDisplay
+    && volumetricDisplay.style === "volumetric"
+  );
+
+  let volumeEnabled = hasVolumetricRepresentation ? 1 : (renderState.volumeEnabled ? 1 : 0);
   let volumeMin = [0, 0, 0];
   let volumeMax = [0, 0, 0];
   let volumeInvSize = [0, 0, 0];
   let volumeMaxValue = 1.0;
+  let volumeThreshold = renderState.volumeThreshold;
+  let volumeValueMax = 1.0;
+  let volumeOpacity = renderState.volumeOpacity;
+  let volumeStep = renderState.volumeStep;
+  let volumeTransferPreset = 0;
+  let volumeDensity = renderState.volumeDensity;
+
+  if (hasVolumetricRepresentation) {
+    volumeThreshold = clamp(Number(volumetricDisplay.volumeValueMin ?? 0.0), 0.0, 0.99);
+    volumeValueMax = clamp(Number(volumetricDisplay.volumeValueMax ?? 1.0), 0.01, 1.0);
+    if (volumeValueMax <= volumeThreshold) {
+      throw new Error("Volume value window max must be greater than min.");
+    }
+    volumeOpacity = clamp(Number(volumetricDisplay.volumeOpacityScale ?? 1.0), 0.0, 20.0);
+    volumeStep = clamp(Number(volumetricDisplay.volumeStepSize ?? 0.5), 0.01, 5.0);
+    volumeTransferPreset = mapVolumeTransferPresetToUniform(volumetricDisplay.volumeTransferPreset);
+    volumeDensity = 1.0;
+  }
 
   if (volumeEnabled) {
     if (!sceneData.volume) {
-      throw new Error("Volume rendering enabled but no volume data is available. Reimport a PDB with volume enabled.");
+      throw new Error("Volume rendering enabled but no volume data is available.");
     }
     const volume = sceneData.volume;
     const [nx, ny, nz] = volume.dims;
@@ -2233,11 +2416,13 @@ setTraceUniforms(gl, traceProgram, {
     volumeInvSize,
     volumeMaxValue,
     volumeColor: renderState.volumeColor,
-    volumeDensity: renderState.volumeDensity,
-    volumeOpacity: renderState.volumeOpacity,
-    volumeStep: renderState.volumeStep,
+    volumeDensity,
+    volumeOpacity,
+    volumeStep,
     volumeMaxSteps: renderState.volumeMaxSteps,
-    volumeThreshold: renderState.volumeThreshold,
+    volumeThreshold,
+    volumeValueMax,
+    volumeTransferPreset,
     useBvh: renderState.useBvh ? 1 : 0,
     useImportedColor: renderState.useImportedColor ? 1 : 0,
     baseColor: renderState.baseColor,
@@ -2252,6 +2437,8 @@ setTraceUniforms(gl, traceProgram, {
     ambientIntensity: renderState.ambientIntensity,
     ambientColor: renderState.ambientColor,
     envIntensity: renderState.envIntensity,
+    envRotationYawRad: (renderState.envRotationDeg * Math.PI) / 180.0,
+    envRotationPitchRad: (renderState.envRotationVerticalDeg * Math.PI) / 180.0,
     envMaxLuminance: renderState.envMaxLuminance,
     useEnv: renderState.envUrl ? 1 : 0,
     materialMode: renderState.materialMode,
@@ -2417,13 +2604,12 @@ loadExampleBtn.addEventListener("click", async () => {
 
 // Load molecular file from file input
 molFileInput.addEventListener("change", async () => {
-  setLoadingOverlay(true, "Loading molecule...");
+  setLoadingOverlay(true, "Loading molecular file(s)...");
   let loaded = false;
   try {
-    const file = molFileInput.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    await loadMolecularFile(text, file.name);
+    const files = Array.from(molFileInput.files || []);
+    if (files.length === 0) return;
+    await importMolecularFiles(files);
     glState = null;
     loaded = true;
   } catch (err) {
@@ -2434,6 +2620,49 @@ molFileInput.addEventListener("change", async () => {
   if (loaded && sceneData) {
     await startRenderLoop();
   }
+});
+
+function hasDraggedFiles(event) {
+  const dt = event?.dataTransfer;
+  if (!dt) return false;
+  if (dt.files && dt.files.length > 0) return true;
+  return Array.from(dt.types || []).includes("Files");
+}
+
+function handleDragOver(event) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+async function handleFileDrop(event) {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (files.length === 0) {
+    return;
+  }
+  setLoadingOverlay(true, "Importing dropped file(s)...");
+  let loaded = false;
+  try {
+    await importMolecularFiles(files);
+    glState = null;
+    loaded = true;
+  } catch (err) {
+    logger.error(err.message || String(err));
+  } finally {
+    setLoadingOverlay(false);
+  }
+  if (loaded && sceneData) {
+    await startRenderLoop();
+  }
+}
+
+window.addEventListener("dragover", handleDragOver);
+window.addEventListener("drop", (event) => {
+  handleFileDrop(event).catch((err) => logger.error(err?.message || String(err)));
 });
 
 loadPdbIdBtn.addEventListener("click", async () => {
@@ -2626,6 +2855,15 @@ envSelect.addEventListener("change", () => {
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
 });
 envIntensityInput.addEventListener("input", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+envUniformColorInput?.addEventListener("input", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+envRotationInput?.addEventListener("input", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+envRotationVerticalInput?.addEventListener("input", () => {
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
 });
 envMaxLumInput?.addEventListener("input", () => {

@@ -9,7 +9,8 @@ export const SCENE_OBJECT_TYPES = Object.freeze({
   PROTEIN: "protein",
   LIGAND: "ligand",
   WATER: "water",
-  METAL_IONS: "metal-ions"
+  METAL_IONS: "metal-ions",
+  VOLUME: "volume"
 });
 
 export const DISPLAY_STYLES = Object.freeze([
@@ -17,14 +18,17 @@ export const DISPLAY_STYLES = Object.freeze([
   "vdw",
   "stick",
   "cartoon",
-  "ses"
+  "ses",
+  "isosurface",
+  "volumetric"
 ]);
 
 const OBJECT_LABELS = Object.freeze({
   [SCENE_OBJECT_TYPES.PROTEIN]: "Protein",
   [SCENE_OBJECT_TYPES.LIGAND]: "Ligand",
   [SCENE_OBJECT_TYPES.WATER]: "Water",
-  [SCENE_OBJECT_TYPES.METAL_IONS]: "Metal ions"
+  [SCENE_OBJECT_TYPES.METAL_IONS]: "Metal ions",
+  [SCENE_OBJECT_TYPES.VOLUME]: "Volume"
 });
 
 function cloneVec3(v) {
@@ -32,6 +36,16 @@ function cloneVec3(v) {
     throw new Error("Expected an RGB vector with 3 components.");
   }
   return [Number(v[0]), Number(v[1]), Number(v[2])];
+}
+
+function normalizeColorVec3(v, label) {
+  const out = cloneVec3(v);
+  for (let i = 0; i < 3; i += 1) {
+    if (!Number.isFinite(out[i]) || out[i] < 0 || out[i] > 1) {
+      throw new Error(`${label} must contain finite RGB values in [0, 1].`);
+    }
+  }
+  return out;
 }
 
 export function createDefaultMaterial() {
@@ -46,6 +60,7 @@ export function createDefaultMaterial() {
     matteRoughness: 0.5,
     matteDiffuseRoughness: 0.5,
     wrapDiffuse: 0.2,
+    opacity: 1.0,
     surfaceIor: 1.0,
     surfaceTransmission: 0.35,
     surfaceOpacity: 0.0
@@ -55,6 +70,25 @@ export function createDefaultMaterial() {
 export function defaultDisplayForObjectType(objectType) {
   if (!Object.values(SCENE_OBJECT_TYPES).includes(objectType)) {
     throw new Error(`Unknown object type: ${objectType}`);
+  }
+  if (objectType === SCENE_OBJECT_TYPES.VOLUME) {
+    return {
+      style: "isosurface",
+      isoLevel: 0.77,
+      isoPositiveColor: [0.15, 0.85, 0.2],
+      isoNegativeColor: [0.9, 0.2, 0.2],
+      volumeValueMin: 0.0,
+      volumeValueMax: 1.0,
+      volumeOpacityScale: 1.0,
+      volumeStepSize: 0.5,
+      volumeTransferPreset: "grayscale",
+      atomScale: 1.0,
+      bondRadius: 0.12,
+      probeRadius: 1.4,
+      surfaceResolution: 0.25,
+      smoothNormals: false,
+      showSheetHbonds: false
+    };
   }
   let style = "stick";
   if (objectType === SCENE_OBJECT_TYPES.PROTEIN) {
@@ -68,26 +102,60 @@ export function defaultDisplayForObjectType(objectType) {
     bondRadius: 0.12,
     probeRadius: 1.4,
     surfaceResolution: 0.25,
+    isoLevel: 0.77,
+    isoPositiveColor: [0.15, 0.85, 0.2],
+    isoNegativeColor: [0.9, 0.2, 0.2],
+    volumeValueMin: 0.0,
+    volumeValueMax: 1.0,
+    volumeOpacityScale: 1.0,
+    volumeStepSize: 0.5,
+    volumeTransferPreset: "grayscale",
     smoothNormals: false,
     showSheetHbonds: false
   };
 }
 
-function normalizeStyle(style) {
+export function displayStylesForObjectType(objectType) {
+  if (objectType === SCENE_OBJECT_TYPES.VOLUME) {
+    return ["isosurface", "volumetric"];
+  }
+  return ["ball-and-stick", "vdw", "stick", "cartoon", "ses"];
+}
+
+function normalizeStyle(style, objectType) {
   if (!DISPLAY_STYLES.includes(style)) {
-    throw new Error(`Unsupported molecular display style: ${style}`);
+    throw new Error(`Unsupported display style: ${style}`);
+  }
+  const allowed = displayStylesForObjectType(objectType);
+  if (!allowed.includes(style)) {
+    throw new Error(`Display style ${style} is not allowed for object type ${objectType}.`);
   }
   return style;
 }
 
 function normalizeDisplaySettings(display, objectType) {
   const base = defaultDisplayForObjectType(objectType);
-  const style = normalizeStyle(display?.style ?? base.style);
+  const style = normalizeStyle(display?.style ?? base.style, objectType);
 
   const atomScale = Number(display?.atomScale ?? base.atomScale);
   const bondRadius = Number(display?.bondRadius ?? base.bondRadius);
   const probeRadius = Number(display?.probeRadius ?? base.probeRadius);
   const surfaceResolution = Number(display?.surfaceResolution ?? base.surfaceResolution);
+  const isoLevel = Number(display?.isoLevel ?? base.isoLevel);
+  const isoPositiveColor = normalizeColorVec3(
+    display?.isoPositiveColor ?? base.isoPositiveColor,
+    "Positive isosurface color"
+  );
+  const isoNegativeColor = normalizeColorVec3(
+    display?.isoNegativeColor ?? base.isoNegativeColor,
+    "Negative isosurface color"
+  );
+  const volumeValueMin = Number(display?.volumeValueMin ?? base.volumeValueMin);
+  const volumeValueMax = Number(display?.volumeValueMax ?? base.volumeValueMax);
+  const volumeOpacityScale = Number(display?.volumeOpacityScale ?? base.volumeOpacityScale);
+  const volumeStepSize = Number(display?.volumeStepSize ?? base.volumeStepSize);
+  const volumeTransferPreset = String(display?.volumeTransferPreset ?? base.volumeTransferPreset);
+  const allowedVolumeTransferPresets = new Set(["grayscale", "heatmap"]);
 
   if (!Number.isFinite(atomScale) || atomScale <= 0) {
     throw new Error("Atom radius scale must be > 0.");
@@ -101,6 +169,24 @@ function normalizeDisplaySettings(display, objectType) {
   if (!Number.isFinite(surfaceResolution) || surfaceResolution <= 0) {
     throw new Error("Surface resolution must be > 0.");
   }
+  if (!Number.isFinite(isoLevel) || isoLevel < 0 || isoLevel > 1) {
+    throw new Error("Iso-level must be within [0, 1].");
+  }
+  if (!Number.isFinite(volumeValueMin) || !Number.isFinite(volumeValueMax)) {
+    throw new Error("Volume value window bounds must be finite.");
+  }
+  if (volumeValueMin >= volumeValueMax) {
+    throw new Error("Volume value window min must be < max.");
+  }
+  if (!Number.isFinite(volumeOpacityScale) || volumeOpacityScale < 0) {
+    throw new Error("Volume opacity scale must be >= 0.");
+  }
+  if (!Number.isFinite(volumeStepSize) || volumeStepSize <= 0) {
+    throw new Error("Volume step size must be > 0.");
+  }
+  if (!allowedVolumeTransferPresets.has(volumeTransferPreset)) {
+    throw new Error(`Unsupported volume transfer preset: ${volumeTransferPreset}`);
+  }
 
   return {
     style,
@@ -108,6 +194,14 @@ function normalizeDisplaySettings(display, objectType) {
     bondRadius,
     probeRadius,
     surfaceResolution,
+    isoLevel,
+    isoPositiveColor,
+    isoNegativeColor,
+    volumeValueMin,
+    volumeValueMax,
+    volumeOpacityScale,
+    volumeStepSize,
+    volumeTransferPreset,
     smoothNormals: Boolean(display?.smoothNormals ?? base.smoothNormals),
     showSheetHbonds: Boolean(display?.showSheetHbonds ?? base.showSheetHbonds)
   };
@@ -132,6 +226,7 @@ export function normalizeMaterial(material) {
     matteRoughness: Number(material?.matteRoughness ?? base.matteRoughness),
     matteDiffuseRoughness: Number(material?.matteDiffuseRoughness ?? base.matteDiffuseRoughness),
     wrapDiffuse: Number(material?.wrapDiffuse ?? base.wrapDiffuse),
+    opacity: Number(material?.opacity ?? base.opacity),
     surfaceIor: Number(material?.surfaceIor ?? base.surfaceIor),
     surfaceTransmission: Number(material?.surfaceTransmission ?? base.surfaceTransmission),
     surfaceOpacity: Number(material?.surfaceOpacity ?? base.surfaceOpacity)
@@ -227,6 +322,8 @@ function createDefaultRepresentation(objectType, repId) {
     name = "Cartoon";
   } else if (display.style === "vdw") {
     name = "Spacefill";
+  } else if (display.style === "isosurface") {
+    name = "Isosurface";
   }
   return {
     id: repId,
@@ -242,8 +339,20 @@ function createObjectLabel(type, atomCount) {
   return `${name} (${atomCount} atoms)`;
 }
 
+function createVolumeLabel(volumeData) {
+  if (!volumeData || !Array.isArray(volumeData.dims) || volumeData.dims.length !== 3) {
+    throw new Error("Volume object requires dims metadata.");
+  }
+  const [nx, ny, nz] = volumeData.dims;
+  return `${OBJECT_LABELS[SCENE_OBJECT_TYPES.VOLUME]} (${nx}x${ny}x${nz})`;
+}
+
 export function createSceneGraphFromMolData(molData, options = {}) {
   const sourceKind = options.sourceKind || "pdb";
+  const volumeGrids = options.volumeGrids || [];
+  if (!Array.isArray(volumeGrids)) {
+    throw new Error("volumeGrids must be an array when provided.");
+  }
   const partitions = partitionMolDataByType(molData, sourceKind);
 
   const orderedTypes = [
@@ -277,6 +386,23 @@ export function createSceneGraphFromMolData(molData, options = {}) {
     });
   }
 
+  for (const volumeData of volumeGrids) {
+    const objectId = `obj-${objectSeq}`;
+    objectSeq += 1;
+    const repId = `rep-${repSeq}`;
+    repSeq += 1;
+    objects.push({
+      id: objectId,
+      type: SCENE_OBJECT_TYPES.VOLUME,
+      visible: true,
+      atomCount: 0,
+      label: createVolumeLabel(volumeData),
+      molData: { atoms: [], bonds: [], secondary: { helices: [], sheets: [] } },
+      volumeData,
+      representations: [createDefaultRepresentation(SCENE_OBJECT_TYPES.VOLUME, repId)]
+    });
+  }
+
   return {
     objects,
     selection: objects.length > 0
@@ -285,6 +411,38 @@ export function createSceneGraphFromMolData(molData, options = {}) {
     nextObjectId: objectSeq,
     nextRepId: repSeq
   };
+}
+
+export function appendSceneGraphFromMolData(sceneGraph, molData, options = {}) {
+  if (!sceneGraph || !Array.isArray(sceneGraph.objects)) {
+    throw new Error("Scene graph is invalid.");
+  }
+  if (!Number.isInteger(sceneGraph.nextObjectId) || sceneGraph.nextObjectId <= 0) {
+    throw new Error("Scene graph nextObjectId is invalid.");
+  }
+  if (!Number.isInteger(sceneGraph.nextRepId) || sceneGraph.nextRepId <= 0) {
+    throw new Error("Scene graph nextRepId is invalid.");
+  }
+
+  const incoming = createSceneGraphFromMolData(molData, options);
+  const appendedObjectIds = [];
+
+  for (const object of incoming.objects) {
+    object.id = `obj-${sceneGraph.nextObjectId}`;
+    sceneGraph.nextObjectId += 1;
+    appendedObjectIds.push(object.id);
+    for (const rep of object.representations || []) {
+      rep.id = `rep-${sceneGraph.nextRepId}`;
+      sceneGraph.nextRepId += 1;
+    }
+    sceneGraph.objects.push(object);
+  }
+
+  if (!sceneGraph.selection && sceneGraph.objects.length > 0) {
+    sceneGraph.selection = { kind: "object", objectId: sceneGraph.objects[0].id, representationId: null };
+  }
+
+  return appendedObjectIds;
 }
 
 export function listVisibleRepresentations(sceneGraph) {

@@ -99,6 +99,7 @@ export function buildNitrogenDensityVolume(molData, options = {}) {
 
   const data = new Float32Array(voxelCount);
   let maxValue = 0.0;
+  let minValue = Infinity;
 
   const invSpacing = 1.0 / spacing;
   const sliceStride = nx * ny;
@@ -148,6 +149,22 @@ export function buildNitrogenDensityVolume(molData, options = {}) {
     throw new Error("Generated volume has no density values.");
   }
 
+  let absMax = 0.0;
+  let minAbsNonZero = Infinity;
+  for (let i = 0; i < data.length; i += 1) {
+    const v = data[i];
+    if (v < minValue) minValue = v;
+    const av = Math.abs(v);
+    if (av > absMax) absMax = av;
+    if (av > 0 && av < minAbsNonZero) minAbsNonZero = av;
+  }
+  if (!Number.isFinite(minValue)) {
+    minValue = 0.0;
+  }
+  if (!Number.isFinite(minAbsNonZero)) {
+    minAbsNonZero = 0.0;
+  }
+
   const maxGridX = minX + spacing * (nx - 1);
   const maxGridY = minY + spacing * (ny - 1);
   const maxGridZ = minZ + spacing * (nz - 1);
@@ -158,6 +175,9 @@ export function buildNitrogenDensityVolume(molData, options = {}) {
     origin: [minX, minY, minZ],
     spacing: [spacing, spacing, spacing],
     maxValue,
+    minValue,
+    absMax,
+    minAbsNonZero,
     nitrogenCount: nitrogenAtoms.length,
     sigma,
     cutoff,

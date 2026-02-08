@@ -853,6 +853,164 @@ function marchingCubesGPU(grid, isovalue, options = {}) {
   };
 }
 
+function marchingCubesScalarGrid(grid, isovalue) {
+  const nx = Number(grid?.nx);
+  const ny = Number(grid?.ny);
+  const nz = Number(grid?.nz);
+  const data = grid?.data;
+  if (!Number.isInteger(nx) || !Number.isInteger(ny) || !Number.isInteger(nz) || nx < 2 || ny < 2 || nz < 2) {
+    throw new Error("Isosurface grid must provide integer dimensions >= 2.");
+  }
+  if (!(data instanceof Float32Array) || data.length !== nx * ny * nz) {
+    throw new Error("Isosurface grid data must be Float32Array with nx*ny*nz entries.");
+  }
+
+  const hasAxisVectors = Array.isArray(grid.axisVectors) && grid.axisVectors.length === 3;
+  const hasOrigin = Array.isArray(grid.origin) && grid.origin.length === 3;
+  const hasMinResolution = Array.isArray(grid.min) && grid.min.length === 3 && Number.isFinite(grid.resolution);
+  if (!((hasAxisVectors && hasOrigin) || hasMinResolution)) {
+    throw new Error("Isosurface grid must provide either {origin, axisVectors} or {min, resolution}.");
+  }
+
+  let origin = null;
+  let axisVectors = null;
+  if (hasAxisVectors && hasOrigin) {
+    origin = [Number(grid.origin[0]), Number(grid.origin[1]), Number(grid.origin[2])];
+    axisVectors = [
+      [Number(grid.axisVectors[0][0]), Number(grid.axisVectors[0][1]), Number(grid.axisVectors[0][2])],
+      [Number(grid.axisVectors[1][0]), Number(grid.axisVectors[1][1]), Number(grid.axisVectors[1][2])],
+      [Number(grid.axisVectors[2][0]), Number(grid.axisVectors[2][1]), Number(grid.axisVectors[2][2])]
+    ];
+  } else {
+    origin = [Number(grid.min[0]), Number(grid.min[1]), Number(grid.min[2])];
+    const step = Number(grid.resolution);
+    axisVectors = [[step, 0, 0], [0, step, 0], [0, 0, step]];
+  }
+
+  const vertices = [];
+  const normals = [];
+  const indices = [];
+  const edgeVertexCache = new Map();
+
+  function getVal(ix, iy, iz) {
+    return data[ix + iy * nx + iz * nx * ny];
+  }
+
+  function worldPos(ix, iy, iz) {
+    return [
+      origin[0] + axisVectors[0][0] * ix + axisVectors[1][0] * iy + axisVectors[2][0] * iz,
+      origin[1] + axisVectors[0][1] * ix + axisVectors[1][1] * iy + axisVectors[2][1] * iz,
+      origin[2] + axisVectors[0][2] * ix + axisVectors[1][2] * iy + axisVectors[2][2] * iz
+    ];
+  }
+
+  function interpolateVertex(p1, p2, v1, v2) {
+    if (Math.abs(isovalue - v1) < 0.00001) return [...p1];
+    if (Math.abs(isovalue - v2) < 0.00001) return [...p2];
+    if (Math.abs(v1 - v2) < 0.00001) return [...p1];
+
+    const t = (isovalue - v1) / (v2 - v1);
+    return [
+      p1[0] + t * (p2[0] - p1[0]),
+      p1[1] + t * (p2[1] - p1[1]),
+      p1[2] + t * (p2[2] - p1[2])
+    ];
+  }
+
+  function addVertex(pos) {
+    const idx = vertices.length / 3;
+    vertices.push(pos[0], pos[1], pos[2]);
+    normals.push(0, 1, 0);
+    return idx;
+  }
+
+  const edgeCorners = [
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7]
+  ];
+
+  const cornerOffsets = [
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+  ];
+
+  function getEdgeCacheKey(ix, iy, iz, edgeIdx) {
+    const [c0, c1] = edgeCorners[edgeIdx];
+    const o0 = cornerOffsets[c0];
+    const o1 = cornerOffsets[c1];
+    if (o0[0] !== o1[0]) {
+      return `x,${ix + Math.min(o0[0], o1[0])},${iy + o0[1]},${iz + o0[2]}`;
+    }
+    if (o0[1] !== o1[1]) {
+      return `y,${ix + o0[0]},${iy + Math.min(o0[1], o1[1])},${iz + o0[2]}`;
+    }
+    return `z,${ix + o0[0]},${iy + o0[1]},${iz + Math.min(o0[2], o1[2])}`;
+  }
+
+  for (let iz = 0; iz < nz - 1; iz += 1) {
+    for (let iy = 0; iy < ny - 1; iy += 1) {
+      for (let ix = 0; ix < nx - 1; ix += 1) {
+        const v = new Array(8);
+        const corners = new Array(8);
+        for (let i = 0; i < 8; i += 1) {
+          const o = cornerOffsets[i];
+          v[i] = getVal(ix + o[0], iy + o[1], iz + o[2]);
+          corners[i] = worldPos(ix + o[0], iy + o[1], iz + o[2]);
+        }
+
+        let cubeIndex = 0;
+        for (let i = 0; i < 8; i += 1) {
+          if (v[i] < isovalue) cubeIndex |= (1 << i);
+        }
+        if (EDGE_TABLE[cubeIndex] === 0) continue;
+
+        const edgeVerts = new Array(12).fill(-1);
+        for (let e = 0; e < 12; e += 1) {
+          if (EDGE_TABLE[cubeIndex] & (1 << e)) {
+            const key = getEdgeCacheKey(ix, iy, iz, e);
+            if (edgeVertexCache.has(key)) {
+              edgeVerts[e] = edgeVertexCache.get(key);
+            } else {
+              const [c0, c1] = edgeCorners[e];
+              const pos = interpolateVertex(corners[c0], corners[c1], v[c0], v[c1]);
+              edgeVerts[e] = addVertex(pos);
+              edgeVertexCache.set(key, edgeVerts[e]);
+            }
+          }
+        }
+
+        const tris = TRI_TABLE[cubeIndex];
+        for (let i = 0; tris[i] !== -1; i += 3) {
+          const i0 = edgeVerts[tris[i]];
+          const i1 = edgeVerts[tris[i + 1]];
+          const i2 = edgeVerts[tris[i + 2]];
+          if (i0 >= 0 && i1 >= 0 && i2 >= 0) {
+            indices.push(i0, i1, i2);
+          }
+        }
+      }
+    }
+  }
+
+  const vertexArray = new Float32Array(vertices);
+  const indexArray = new Uint32Array(indices);
+  const normalArray = smoothNormalsGPU(vertexArray, new Float32Array(normals), indexArray);
+  return {
+    vertices: vertexArray,
+    normals: normalArray,
+    indices: indexArray
+  };
+}
+
+export function extractIsosurfaceFromScalarGrid(grid, isovalue) {
+  const iso = Number(isovalue);
+  if (!Number.isFinite(iso)) {
+    throw new Error("Isosurface level must be a finite number.");
+  }
+  return marchingCubesScalarGrid(grid, iso);
+}
+
 function smoothNormalsGPU(vertices, perVertexNormals, indices) {
   const vertexCount = vertices.length / 3;
   const accumulated = new Float32Array(vertexCount * 3);

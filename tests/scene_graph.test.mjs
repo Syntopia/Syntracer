@@ -4,13 +4,15 @@ import assert from "node:assert/strict";
 import {
   SCENE_OBJECT_TYPES,
   createSceneGraphFromMolData,
+  appendSceneGraphFromMolData,
   listVisibleRepresentations,
   toggleObjectVisibility,
   toggleRepresentationVisibility,
   addRepresentationToObject,
   updateRepresentation,
   selectRepresentation,
-  partitionMolDataByType
+  partitionMolDataByType,
+  displayStylesForObjectType
 } from "../src/scene_graph.js";
 
 function makeMixedMolData() {
@@ -73,6 +75,67 @@ test("non-PDB sources classify everything as ligand", () => {
   assert.equal(graph.objects[0].atomCount, 5);
 });
 
+test("scene graph can include volume objects with default isosurface representation", () => {
+  const volumeData = {
+    data: new Float32Array(8),
+    dims: [2, 2, 2],
+    origin: [0, 0, 0],
+    spacing: [1, 1, 1],
+    minValue: 0,
+    maxValue: 1,
+    bounds: { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 },
+    version: 1
+  };
+
+  const graph = createSceneGraphFromMolData(makeMixedMolData(), {
+    sourceKind: "sdf",
+    volumeGrids: [volumeData]
+  });
+  const volumeObject = graph.objects.find((o) => o.type === SCENE_OBJECT_TYPES.VOLUME);
+  assert.ok(volumeObject);
+  assert.equal(volumeObject.label, "Volume (2x2x2)");
+  assert.equal(volumeObject.representations[0].display.style, "isosurface");
+  assert.equal(volumeObject.representations[0].name, "Isosurface");
+  assert.deepEqual(volumeObject.representations[0].display.isoPositiveColor, [0.15, 0.85, 0.2]);
+  assert.deepEqual(volumeObject.representations[0].display.isoNegativeColor, [0.9, 0.2, 0.2]);
+});
+
+test("display style availability is restricted by object type", () => {
+  assert.deepEqual(
+    displayStylesForObjectType(SCENE_OBJECT_TYPES.VOLUME),
+    ["isosurface", "volumetric"]
+  );
+  assert.ok(displayStylesForObjectType(SCENE_OBJECT_TYPES.LIGAND).includes("stick"));
+  assert.ok(!displayStylesForObjectType(SCENE_OBJECT_TYPES.LIGAND).includes("volumetric"));
+});
+
+test("appendSceneGraphFromMolData appends objects and advances ids", () => {
+  const graph = createSceneGraphFromMolData(makeMixedMolData(), { sourceKind: "sdf" });
+  const initialObjectCount = graph.objects.length;
+  const initialNextObjectId = graph.nextObjectId;
+  const initialNextRepId = graph.nextRepId;
+
+  const appendedIds = appendSceneGraphFromMolData(
+    graph,
+    {
+      atoms: [
+        { element: "O", isHet: true, resName: "HOH", position: [10, 0, 0] }
+      ],
+      bonds: [],
+      secondary: { helices: [], sheets: [] }
+    },
+    { sourceKind: "pdb" }
+  );
+
+  assert.equal(appendedIds.length, 1);
+  assert.equal(graph.objects.length, initialObjectCount + 1);
+  const appended = graph.objects[graph.objects.length - 1];
+  assert.equal(appended.id, `obj-${initialNextObjectId}`);
+  assert.equal(appended.representations[0].id, `rep-${initialNextRepId}`);
+  assert.equal(graph.nextObjectId, initialNextObjectId + 1);
+  assert.equal(graph.nextRepId, initialNextRepId + 1);
+});
+
 test("visibility controls affect visible representation list", () => {
   const graph = createSceneGraphFromMolData(makeMixedMolData(), { sourceKind: "pdb" });
   const protein = graph.objects.find((o) => o.type === SCENE_OBJECT_TYPES.PROTEIN);
@@ -107,6 +170,7 @@ test("can add and update representations", () => {
       mode: "surface-glass",
       useImportedColor: false,
       baseColor: [0.5, 0.6, 0.7],
+      opacity: 0.45,
       surfaceIor: 1.45,
       surfaceTransmission: 0.4,
       surfaceOpacity: 0.1
@@ -117,6 +181,7 @@ test("can add and update representations", () => {
   assert.equal(updated.name, "Surface");
   assert.equal(updated.display.style, "ses");
   assert.equal(updated.material.mode, "surface-glass");
+  assert.equal(updated.material.opacity, 0.45);
 
   selectRepresentation(graph, protein.id, rep.id);
   assert.equal(graph.selection.kind, "representation");

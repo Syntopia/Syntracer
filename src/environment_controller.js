@@ -2,7 +2,11 @@ import {
   ANALYTIC_SKY_ID,
   analyticSkyCacheKey,
   generateAnalyticSkyEnvironment,
-  normalizeAnalyticSkySettings
+  normalizeAnalyticSkySettings,
+  UNIFORM_ENV_ID,
+  uniformEnvCacheKey,
+  normalizeUniformEnvSettings,
+  generateUniformEnvironment
 } from "./analytic_sky.js";
 import { loadHDR, buildEnvSamplingData } from "./hdr.js";
 
@@ -10,6 +14,9 @@ export function createEnvironmentController(deps) {
   const {
     envSelect,
     envIntensityInput,
+    envUniformColorInput,
+    envRotationInput,
+    envRotationVerticalInput,
     envMaxLumInput,
     analyticSkyResolutionSelect,
     analyticSkyTurbidityInput,
@@ -59,11 +66,35 @@ export function createEnvironmentController(deps) {
     });
   }
 
+  function hexToRgb01(hex, label) {
+    const value = String(hex || "");
+    const match = value.match(/^#([0-9a-fA-F]{6})$/);
+    if (!match) {
+      throw new Error(`${label} must be a #RRGGBB color.`);
+    }
+    const raw = match[1];
+    return [
+      Number.parseInt(raw.slice(0, 2), 16) / 255,
+      Number.parseInt(raw.slice(2, 4), 16) / 255,
+      Number.parseInt(raw.slice(4, 6), 16) / 255
+    ];
+  }
+
+  function getUniformEnvSettingsFromUi() {
+    const color = hexToRgb01(envUniformColorInput?.value, "Uniform environment color");
+    return normalizeUniformEnvSettings({ color });
+  }
+
   function updateEnvironmentVisibility() {
     const analyticControls = document.querySelector(".analytic-sky-controls");
-    if (!analyticControls) return;
+    const uniformControls = document.querySelector(".uniform-env-controls");
     const selected = envSelect?.value || "";
-    analyticControls.style.display = selected === ANALYTIC_SKY_ID ? "block" : "none";
+    if (analyticControls) {
+      analyticControls.style.display = selected === ANALYTIC_SKY_ID ? "block" : "none";
+    }
+    if (uniformControls) {
+      uniformControls.style.display = selected === UNIFORM_ENV_ID ? "block" : "none";
+    }
   }
 
   function uploadEnvironmentToGl(env) {
@@ -102,7 +133,7 @@ export function createEnvironmentController(deps) {
     glState.envCacheKey = env.version || renderState.envCacheKey;
   }
 
-  async function loadEnvironment(url, analyticSettings = null) {
+  async function loadEnvironment(url, options = {}) {
     const glState = getGlState();
     if (!url) {
       renderState.envUrl = null;
@@ -131,6 +162,7 @@ export function createEnvironmentController(deps) {
 
     let env = null;
     if (url === ANALYTIC_SKY_ID) {
+      const analyticSettings = options.analyticSettings ?? null;
       if (!analyticSettings) {
         throw new Error("Analytic sky settings are required.");
       }
@@ -141,6 +173,21 @@ export function createEnvironmentController(deps) {
       } else {
         logger.info("Generating analytic sky (Preetham/Perez) with WebGPU...");
         env = await generateAnalyticSkyEnvironment(settings, logger);
+        env.samplingData = buildEnvSamplingData(env.data, env.width, env.height);
+        env.version = key;
+        envCache.set(key, env);
+      }
+    } else if (url === UNIFORM_ENV_ID) {
+      const uniformSettings = options.uniformSettings ?? null;
+      if (!uniformSettings) {
+        throw new Error("Uniform environment settings are required.");
+      }
+      const settings = normalizeUniformEnvSettings(uniformSettings);
+      const key = `${UNIFORM_ENV_ID}:${uniformEnvCacheKey(settings)}`;
+      if (envCache.has(key)) {
+        env = envCache.get(key);
+      } else {
+        env = await generateUniformEnvironment(settings, logger);
         env.samplingData = buildEnvSamplingData(env.data, env.width, env.height);
         env.version = key;
         envCache.set(key, env);
@@ -167,6 +214,8 @@ export function createEnvironmentController(deps) {
   async function updateEnvironmentState() {
     setLoadingOverlay(true, "Loading environment...");
     renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 1.0);
+    renderState.envRotationDeg = clamp(Number(envRotationInput?.value ?? 0), -180, 180);
+    renderState.envRotationVerticalDeg = clamp(Number(envRotationVerticalInput?.value ?? 0), -180, 180);
     renderState.envMaxLuminance = clamp(Number(envMaxLumInput?.value ?? 50), 0, 500);
     const url = envSelect.value || null;
     let envChanged = false;
@@ -176,14 +225,21 @@ export function createEnvironmentController(deps) {
         const analyticSettings = getAnalyticSkySettingsFromUi();
         const analyticKey = `${ANALYTIC_SKY_ID}:${analyticSkyCacheKey(analyticSettings)}`;
         if (url !== renderState.envUrl || analyticKey !== renderState.envCacheKey) {
-          await loadEnvironment(url, analyticSettings);
+          await loadEnvironment(url, { analyticSettings });
+          envChanged = true;
+        }
+      } else if (url === UNIFORM_ENV_ID) {
+        const uniformSettings = getUniformEnvSettingsFromUi();
+        const uniformKey = `${UNIFORM_ENV_ID}:${uniformEnvCacheKey(uniformSettings)}`;
+        if (url !== renderState.envUrl || uniformKey !== renderState.envCacheKey) {
+          await loadEnvironment(url, { uniformSettings });
           envChanged = true;
         }
       } else if (url !== renderState.envUrl) {
         await loadEnvironment(url);
         envChanged = true;
       }
-      resetAccumulation(envChanged ? "Environment updated." : "Environment intensity updated.");
+      resetAccumulation(envChanged ? "Environment updated." : "Environment settings updated.");
     } catch (err) {
       logger.error(err.message || String(err));
     }
@@ -198,6 +254,11 @@ export function createEnvironmentController(deps) {
       const manifest = await res.json();
 
       for (const entry of manifest) {
+        const file = String(entry?.file || "").toLowerCase();
+        const name = String(entry?.name || "").toLowerCase();
+        if (file === "white.hdr" || name === "white") {
+          continue;
+        }
         const option = document.createElement("option");
         option.value = `assets/env/${entry.file}`;
         option.textContent = entry.name;
@@ -215,4 +276,3 @@ export function createEnvironmentController(deps) {
     loadEnvManifest
   };
 }
-

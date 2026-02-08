@@ -101,3 +101,71 @@ test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond
   assert.ok(cylinderRange);
   assert.deepEqual(cylinderRange.cylinderBondAtomPairs, [[0, 1]]);
 });
+
+test("compileSceneGraphGeometry exposes active volumetric representation metadata", () => {
+  const graph = createSceneGraphFromMolData(makeMolData(), {
+    sourceKind: "sdf",
+    volumeGrids: [{
+      data: new Float32Array(8),
+      dims: [2, 2, 2],
+      origin: [0, 0, 0],
+      spacing: [1, 1, 1],
+      minValue: 0,
+      maxValue: 1,
+      bounds: { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 },
+      version: 1
+    }]
+  });
+
+  const volumeObject = graph.objects.find((o) => o.type === "volume");
+  assert.ok(volumeObject);
+  const rep = volumeObject.representations[0];
+  updateRepresentation(graph, volumeObject.id, rep.id, {
+    display: {
+      style: "volumetric",
+      volumeValueMin: 0.1,
+      volumeValueMax: 0.9,
+      volumeOpacityScale: 1.2,
+      volumeStepSize: 0.4,
+      volumeTransferPreset: "heatmap"
+    }
+  });
+
+  const compiled = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
+  assert.ok(compiled.volumeData);
+  assert.equal(compiled.volumeData.dims[0], 2);
+  assert.ok(compiled.volumeDisplay);
+  assert.equal(compiled.volumeDisplay.style, "volumetric");
+  assert.equal(compiled.volumeDisplay.volumeTransferPreset, "heatmap");
+});
+
+test("compileSceneGraphGeometry fails when multiple volumetric representations are visible", () => {
+  const graph = createSceneGraphFromMolData(makeMolData(), {
+    sourceKind: "sdf",
+    volumeGrids: [{
+      data: new Float32Array(8),
+      dims: [2, 2, 2],
+      origin: [0, 0, 0],
+      spacing: [1, 1, 1],
+      minValue: 0,
+      maxValue: 1,
+      bounds: { minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 },
+      version: 2
+    }]
+  });
+  const volumeObject = graph.objects.find((o) => o.type === "volume");
+  assert.ok(volumeObject);
+  const repA = volumeObject.representations[0];
+  const repB = addRepresentationToObject(graph, volumeObject.id);
+  updateRepresentation(graph, volumeObject.id, repA.id, {
+    display: { style: "volumetric", volumeValueMin: 0.1, volumeValueMax: 0.8 }
+  });
+  updateRepresentation(graph, volumeObject.id, repB.id, {
+    display: { style: "volumetric", volumeValueMin: 0.2, volumeValueMax: 0.9 }
+  });
+
+  assert.throws(
+    () => compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null }),
+    /Multiple volumetric representations are visible/i
+  );
+});

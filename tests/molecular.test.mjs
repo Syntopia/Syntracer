@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parsePDB, splitMolDataByHetatm } from "../src/molecular.js";
+import { readFileSync } from "node:fs";
+import { parsePDB, parseAutoDetect, splitMolDataByHetatm } from "../src/molecular.js";
 
 test("parsePDB marks HETATM and splitMolDataByHetatm partitions atoms/bonds", () => {
   const pdb = [
@@ -62,4 +63,11 @@ test("parsePDB captures HELIX and SHEET records", () => {
   assert.equal(mol.secondary.helices[0].chainId, "A", "Helix chain ID should match");
   assert.equal(mol.secondary.helices[0].startSeq, 1, "Helix start seq should match");
   assert.equal(mol.secondary.helices[0].endSeq, 5, "Helix end seq should match");
+});
+
+test("parseAutoDetect handles cube files by returning molecule data", () => {
+  const cubeText = readFileSync("tests/hf_total_density.cube", "utf8");
+  const mol = parseAutoDetect(cubeText, "hf_total_density.cube");
+  assert.equal(mol.atoms.length, 6);
+  assert.ok(Array.isArray(mol.bonds));
 });

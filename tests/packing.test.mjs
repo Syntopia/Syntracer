@@ -59,6 +59,7 @@ test("packMaterialTable encodes material mode and key parameters", () => {
       metallic: 0.2,
       roughness: 0.3,
       rimBoost: 0.1,
+      opacity: 0.6,
       matteSpecular: 0.03,
       matteRoughness: 0.5,
       matteDiffuseRoughness: 0.4,
@@ -74,6 +75,7 @@ test("packMaterialTable encodes material mode and key parameters", () => {
       metallic: 0.0,
       roughness: 0.25,
       rimBoost: 0.0,
+      opacity: 0.9,
       matteSpecular: 0.02,
       matteRoughness: 0.6,
       matteDiffuseRoughness: 0.5,
@@ -90,6 +92,8 @@ test("packMaterialTable encodes material mode and key parameters", () => {
   assert.ok(Math.abs(packed.data[4] - 0.03) < 1e-6);
   assert.ok(Math.abs(packed.data[8] - 1.33) < 1e-6);
   assert.ok(Math.abs(packed.data[12] - 0.8) < 1e-6);
+  assert.ok(Math.abs(packed.data[15] - 0.6) < 1e-6);
   assert.equal(packed.data[16], 2);
   assert.equal(packed.data[27], 0);
+  assert.ok(Math.abs(packed.data[31] - 0.9) < 1e-6);
 });

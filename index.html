@@ -682,8 +682,8 @@
             <div class="form-section">
               <div class="form-section-title">Import Files</div>
 
-              <label for="molFileInput">Molecular file (PDB/SDF/MOL)</label>
-              <input id="molFileInput" type="file" accept=".pdb,.sdf,.mol" />
+              <label for="molFileInput">Molecular file (PDB/SDF/MOL/CUBE)</label>
+              <input id="molFileInput" type="file" accept=".pdb,.sdf,.mol,.cube" multiple />
 
               <div style="height: 8px"></div>
               <div class="flex-row">
@@ -695,38 +695,6 @@
               </div>
             </div>
 
-            <div class="form-section">
-              <div class="form-section-title">Import Options</div>
-              <div style="font-size: 11px; color: var(--fg-muted); margin-bottom: 8px;">
-                Volume (applied on PDB import)
-              </div>
-              <div class="checkbox-group">
-                <input id="volumeImportToggle" type="checkbox" />
-                <label for="volumeImportToggle">Create nitrogen density volume</label>
-              </div>
-
-              <label for="volumeGridSpacing">Volume grid spacing (Å)</label>
-              <div class="slider-input">
-                <input id="volumeGridSpacing" type="range" min="0.2" max="1.5" step="0.05" value="0.5" />
-                <input type="text" class="value-input" data-for="volumeGridSpacing" value="0.50" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeGridSpacing">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeGridSpacing">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="volumeGaussianScale">Gaussian radius scale (x VdW)</label>
-              <div class="slider-input">
-                <input id="volumeGaussianScale" type="range" min="1" max="6" step="0.1" value="3.0" />
-                <input type="text" class="value-input" data-for="volumeGaussianScale" value="3.0" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeGaussianScale">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeGaussianScale">◀</button>
-                </div>
-              </div>
-
-            </div>
           </div>
 
           <!-- RENDER TAB -->
@@ -738,6 +706,7 @@
                   <label for="envSelect">Environment map</label>
                   <select id="envSelect">
                     <option value="analytic://preetham-perez" selected>Analytic Sky (Preetham/Perez)</option>
+                    <option value="analytic://uniform">Uniform</option>
                     <option value="">None</option>
                     <!-- Populated dynamically from assets/env/manifest.json -->
                   </select>
@@ -840,6 +809,12 @@
                     </div>
                   </div>
 
+                  <div class="uniform-env-controls" style="display:none">
+                    <div style="height: 12px"></div>
+                    <label for="uniformEnvColor">Uniform color</label>
+                    <input id="uniformEnvColor" type="color" value="#ffffff" />
+                  </div>
+
                   <div style="height: 12px"></div>
                   <label for="envIntensity">Environment intensity</label>
                   <div class="slider-input">
@@ -848,6 +823,28 @@
                     <div class="step-buttons">
                       <button type="button" class="step-btn" data-action="up" data-for="envIntensity">▶</button>
                       <button type="button" class="step-btn" data-action="down" data-for="envIntensity">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="envRotation">Environment rotation horizontal (deg)</label>
+                  <div class="slider-input">
+                    <input id="envRotation" type="range" min="-180" max="180" step="1" value="0" />
+                    <input type="text" class="value-input" data-for="envRotation" value="0" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="envRotation">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="envRotation">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="envRotationVertical">Environment rotation vertical (deg)</label>
+                  <div class="slider-input">
+                    <input id="envRotationVertical" type="range" min="-180" max="180" step="1" value="0" />
+                    <input type="text" class="value-input" data-for="envRotationVertical" value="0" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="envRotationVertical">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="envRotationVertical">◀</button>
                     </div>
                   </div>
 
@@ -1239,6 +1236,8 @@
                 <option value="stick">Stick only</option>
                 <option value="cartoon">Cartoon (Backbone)</option>
                 <option value="ses">Solvent-Excluded Surface (SES)</option>
+                <option value="isosurface">Isosurface</option>
+                <option value="volumetric">Volumetric</option>
               </select>
 
               <div class="display-atom-controls">
@@ -1299,6 +1298,80 @@
                 </div>
 
               </div>
+
+              <div class="display-isosurface-controls">
+                <div style="height: 8px"></div>
+                <label for="isoLevel">Iso-level (log |value|)</label>
+                <div class="slider-input">
+                  <input id="isoLevel" type="range" min="0.01" max="1.00" step="0.01" value="0.77" />
+                  <input type="text" class="value-input" data-for="isoLevel" value="0.77" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="isoLevel">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="isoLevel">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="isoPositiveColor">Positive iso color</label>
+                <input id="isoPositiveColor" type="color" value="#26d933" />
+
+                <div style="height: 8px"></div>
+                <label for="isoNegativeColor">Negative iso color</label>
+                <input id="isoNegativeColor" type="color" value="#e63333" />
+              </div>
+
+              <div class="display-volume-controls">
+                <div style="height: 8px"></div>
+                <label for="volumeValueMin">Value window min (normalized)</label>
+                <div class="slider-input">
+                  <input id="volumeValueMin" type="range" min="0.00" max="0.99" step="0.01" value="0.00" />
+                  <input type="text" class="value-input" data-for="volumeValueMin" value="0.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="volumeValueMin">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="volumeValueMin">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="volumeValueMax">Value window max (normalized)</label>
+                <div class="slider-input">
+                  <input id="volumeValueMax" type="range" min="0.01" max="1.00" step="0.01" value="1.00" />
+                  <input type="text" class="value-input" data-for="volumeValueMax" value="1.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="volumeValueMax">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="volumeValueMax">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="volumeOpacityScale">Opacity scale</label>
+                <div class="slider-input">
+                  <input id="volumeOpacityScale" type="range" min="0.00" max="5.00" step="0.05" value="1.00" />
+                  <input type="text" class="value-input" data-for="volumeOpacityScale" value="1.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="volumeOpacityScale">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="volumeOpacityScale">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="volumeStepSize">Step size (Å)</label>
+                <div class="slider-input">
+                  <input id="volumeStepSize" type="range" min="0.05" max="2.00" step="0.05" value="0.50" />
+                  <input type="text" class="value-input" data-for="volumeStepSize" value="0.50" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="volumeStepSize">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="volumeStepSize">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="volumeTransferPreset">Transfer preset</label>
+                <select id="volumeTransferPreset">
+                  <option value="grayscale" selected>Grayscale</option>
+                  <option value="heatmap">Heatmap</option>
+                </select>
+              </div>
             </div>
 
             <div class="form-section">
@@ -1343,6 +1416,17 @@
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="rimBoost">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="rimBoost">◀</button>
+                  </div>
+                </div>
+
+                <div style="height: 8px"></div>
+                <label for="metallicOpacity">Opacity</label>
+                <div class="slider-input">
+                  <input id="metallicOpacity" type="range" min="0" max="1" step="0.01" value="1" />
+                  <input type="text" class="value-input" data-for="metallicOpacity" value="1.00" />
+                  <div class="step-buttons">
+                    <button type="button" class="step-btn" data-action="up" data-for="metallicOpacity">▶</button>
+                    <button type="button" class="step-btn" data-action="down" data-for="metallicOpacity">◀</button>
                   </div>
                 </div>
               </div>

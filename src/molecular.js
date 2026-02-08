@@ -1,7 +1,9 @@
 /**
- * Molecular file parser and converter for PDB and SDF formats.
+ * Molecular file parser and converter for PDB/SDF/CUBE formats.
  * Converts molecular structures to spheres (atoms) and cylinders (bonds).
  */
+import { parseCubeFile } from "./cube.js";
+export { parseCubeFile };
 
 // CPK/Jmol-style element colors
 const ELEMENT_COLORS = {
@@ -430,6 +432,8 @@ export function parseAutoDetect(text, filename = '') {
 
   if (ext === 'pdb' || text.includes('ATOM  ') || text.includes('HETATM')) {
     return parsePDB(text);
+  } else if (ext === "cube") {
+    return parseCubeFile(text).molData;
   } else if (ext === 'sdf' || ext === 'mol' || text.includes('V2000') || text.includes('V3000')) {
     return parseSDF(text);
   } else {

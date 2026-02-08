@@ -1,5 +1,5 @@
 import { mergeTriangleMeshes } from "./scene_controller.js";
-import { listVisibleRepresentations } from "./scene_graph.js";
+import { listVisibleRepresentations, SCENE_OBJECT_TYPES } from "./scene_graph.js";
 import { buildRepresentationGeometry, representationGeometryCacheKey } from "./representation_builder.js";
 import { PRIM_TRIANGLE, PRIM_SPHERE, PRIM_CYLINDER } from "./bvh.js";
 
@@ -137,9 +137,26 @@ export function compileSceneGraphGeometry(sceneGraph, options = {}) {
   const materialAssignments = emptyMaterialAssignments();
   const materialIndexBySignature = new Map();
   const materialSignatures = new Set();
+  let activeVolume = null;
+  let activeVolumeDisplay = null;
+  let activeVolumeRepId = null;
 
   for (const entry of visibleEntries) {
     const { object, representation } = entry;
+    if (object.type === SCENE_OBJECT_TYPES.VOLUME && representation.display?.style === "volumetric") {
+      if (!object.volumeData) {
+        throw new Error(`Volume object ${object.id} is missing volumeData.`);
+      }
+      if (activeVolumeRepId != null && activeVolumeRepId !== representation.id) {
+        throw new Error(
+          "Multiple volumetric representations are visible. Only one volumetric representation can be active."
+        );
+      }
+      activeVolume = object.volumeData;
+      activeVolumeDisplay = representation.display;
+      activeVolumeRepId = representation.id;
+    }
+
     const cacheKey = representationGeometryCacheKey(object, representation);
     const cacheEntry = geometryCache.get(representation.id);
 
@@ -204,6 +221,8 @@ export function compileSceneGraphGeometry(sceneGraph, options = {}) {
     hasMaterialConflict: materialSignatures.size > 1,
     visibleEntries,
     pickRanges,
+    volumeData: activeVolume,
+    volumeDisplay: activeVolumeDisplay,
     materials: materialAssignments.materials,
     triMaterialIndices: Float32Array.from(materialAssignments.triMaterialIndices),
     sphereMaterialIndices: Float32Array.from(materialAssignments.sphereMaterialIndices),

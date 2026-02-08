@@ -74,6 +74,8 @@ uniform float uVolumeOpacity;
 uniform float uVolumeStep;
 uniform int uVolumeMaxSteps;
 uniform float uVolumeThreshold;
+uniform float uVolumeValueMax;
+uniform int uVolumeTransferPreset;
 
 // Primitive type constants
 const int PRIM_TRIANGLE = 0;
@@ -112,6 +114,8 @@ uniform float uTMin;
 uniform float uEnvIntensity;
 uniform int uUseEnv;
 uniform float uEnvMaxLuminance;
+uniform float uEnvRotationYawRad;
+uniform float uEnvRotationPitchRad;
 uniform sampler2D uEnvMarginalCdf;
 uniform sampler2D uEnvConditionalCdf;
 uniform vec2 uEnvSize;
@@ -197,6 +201,7 @@ struct MaterialData {
   float surfaceOpacity;
   float useImportedColor;
   vec3 baseColor;
+  float opacity;
 };
 
 MaterialData fetchMaterialData(int materialIndex) {
@@ -221,6 +226,7 @@ MaterialData fetchMaterialData(int materialIndex) {
   m.surfaceOpacity = p2.z;
   m.useImportedColor = p2.w;
   m.baseColor = p3.rgb;
+  m.opacity = p3.a;
   return m;
 }
 
@@ -279,12 +285,45 @@ vec3 evalDiffuseBrdf(vec3 N, vec3 V, vec3 L, vec3 baseColor, float diffRough, fl
   return brdf;
 }
 
+vec3 rotateAroundY(vec3 v, float angle) {
+  float c = cos(angle);
+  float s = sin(angle);
+  return vec3(
+    c * v.x + s * v.z,
+    v.y,
+    -s * v.x + c * v.z
+  );
+}
+
+vec3 rotateAroundX(vec3 v, float angle) {
+  float c = cos(angle);
+  float s = sin(angle);
+  return vec3(
+    v.x,
+    c * v.y - s * v.z,
+    s * v.y + c * v.z
+  );
+}
+
+vec3 envToWorldDirection(vec3 envDir) {
+  vec3 outDir = rotateAroundY(envDir, uEnvRotationYawRad);
+  outDir = rotateAroundX(outDir, uEnvRotationPitchRad);
+  return normalize(outDir);
+}
+
+vec3 worldToEnvDirection(vec3 worldDir) {
+  vec3 outDir = rotateAroundX(worldDir, -uEnvRotationPitchRad);
+  outDir = rotateAroundY(outDir, -uEnvRotationYawRad);
+  return normalize(outDir);
+}
+
 vec3 sampleEnv(vec3 dir) {
   if (uUseEnv == 0) {
     return vec3(0.0);
   }
-  vec3 d = normalize(dir);
+  vec3 d = worldToEnvDirection(dir);
   float u = atan(d.z, d.x) / (2.0 * PI) + 0.5;
+  u = fract(u);
   float v = acos(clamp(d.y, -1.0, 1.0)) / PI;
   vec3 color = texture(uEnvTex, vec2(u, v)).rgb * uEnvIntensity;
 
@@ -304,8 +343,9 @@ vec3 sampleEnv(vec3 dir) {
 
 // Convert direction to environment map UV coordinates
 vec2 dirToEnvUv(vec3 dir) {
-  vec3 d = normalize(dir);
+  vec3 d = worldToEnvDirection(dir);
   float u = atan(d.z, d.x) / (2.0 * PI) + 0.5;
+  u = fract(u);
   float v = acos(clamp(d.y, -1.0, 1.0)) / PI;
   return vec2(u, v);
 }
@@ -489,6 +529,22 @@ float sampleVolume(vec3 pos) {
   vec3 uvw = (pos - uVolumeMin) * uVolumeInvSize;
   uvw = clamp(uvw, vec3(0.0), vec3(1.0));
   return texture(uVolumeTex, uvw).r;
+}
+
+vec3 volumeTransferColor(float t) {
+  float x = clamp(t, 0.0, 1.0);
+  if (uVolumeTransferPreset == 1) {
+    vec3 c0 = vec3(0.0, 0.0, 0.0);
+    vec3 c1 = vec3(0.0, 0.2, 0.8);
+    vec3 c2 = vec3(0.0, 0.9, 0.9);
+    vec3 c3 = vec3(0.9, 0.9, 0.2);
+    vec3 c4 = vec3(1.0, 1.0, 1.0);
+    if (x < 0.25) return mix(c0, c1, x / 0.25);
+    if (x < 0.50) return mix(c1, c2, (x - 0.25) / 0.25);
+    if (x < 0.75) return mix(c2, c3, (x - 0.50) / 0.25);
+    return mix(c3, c4, (x - 0.75) / 0.25);
+  }
+  return vec3(x);
 }
 
 // Sphere intersection: returns vec2(t, 0) or vec2(-1, 0) if no hit
@@ -1076,11 +1132,12 @@ vec3 sampleEnvDirection(inout uint seed, out float pdf) {
   float uFloat = binarySearchCdf(uEnvConditionalCdf, float(vIdx), width + 1, r2);
   float u = (uFloat + 0.5) / float(width);
 
-  // Convert UV to direction
+  // Convert UV to direction in environment-local space
   float theta = v * PI;
   float phi = u * 2.0 * PI - PI;
   float sinTheta = sin(theta);
-  vec3 dir = vec3(sinTheta * cos(phi), cos(theta), sinTheta * sin(phi));
+  vec3 envDir = vec3(sinTheta * cos(phi), cos(theta), sinTheta * sin(phi));
+  vec3 dir = envToWorldDirection(envDir);
 
   // Compute PDF from the CDF differences
   float marginalPdf = texelFetch(uEnvMarginalCdf, ivec2(vIdx + 1, 0), 0).r -
@@ -1361,12 +1418,14 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
             if (tCurrent > tExit) break;
             float stepSize = min(uVolumeStep, tExit - tCurrent);
             vec3 pos = origin + dir * tCurrent;
-            float density = sampleVolume(pos) * invMax;
-            density = max(0.0, density - uVolumeThreshold);
-            if (density > 0.0) {
-              float alpha = 1.0 - exp(-density * uVolumeDensity * stepSize);
+            float densityNorm = sampleVolume(pos) * invMax;
+            float windowSpan = max(uVolumeValueMax - uVolumeThreshold, 1e-6);
+            float mapped = clamp((densityNorm - uVolumeThreshold) / windowSpan, 0.0, 1.0);
+            if (mapped > 0.0) {
+              float alpha = 1.0 - exp(-mapped * uVolumeDensity * stepSize);
               alpha = clamp(alpha * uVolumeOpacity, 0.0, 1.0);
-              radiance += throughput * uVolumeColor * alpha;
+              vec3 volumeColor = volumeTransferColor(mapped) * uVolumeColor;
+              radiance += throughput * volumeColor * alpha;
               throughput *= (1.0 - alpha);
               if (maxComponent(throughput) < 1e-3) {
                 throughput = vec3(0.0);
@@ -1476,6 +1535,15 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
         continue;
       }
       // Fall through to opaque surface handling when opacity check passes
+    }
+    if (material.mode == 0) {
+      float metallicOpacity = clamp(material.opacity, 0.0, 1.0);
+      if (rand(seed) > metallicOpacity) {
+        origin = hitPos + dir * bias;
+        lastBrdfPdf = 0.0;
+        ignoreSurfaceTraversalHits = false;
+        continue;
+      }
     }
     ignoreSurfaceTraversalHits = false;
 
@@ -1983,6 +2051,8 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1f(gl.getUniformLocation(program, "uVolumeStep"), uniforms.volumeStep ?? 0.0);
   gl.uniform1i(gl.getUniformLocation(program, "uVolumeMaxSteps"), uniforms.volumeMaxSteps ?? 0);
   gl.uniform1f(gl.getUniformLocation(program, "uVolumeThreshold"), uniforms.volumeThreshold ?? 0.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uVolumeValueMax"), uniforms.volumeValueMax ?? 1.0);
+  gl.uniform1i(gl.getUniformLocation(program, "uVolumeTransferPreset"), uniforms.volumeTransferPreset ?? 0);
   gl.uniform1i(gl.getUniformLocation(program, "uUseBvh"), uniforms.useBvh);
   gl.uniform1i(gl.getUniformLocation(program, "uUseImportedColor"), uniforms.useImportedColor);
   gl.uniform3fv(gl.getUniformLocation(program, "uBaseColor"), uniforms.baseColor);
@@ -2016,6 +2086,8 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1f(gl.getUniformLocation(program, "uTMin"), uniforms.tMin);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvIntensity"), uniforms.envIntensity);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvMaxLuminance"), uniforms.envMaxLuminance ?? 50.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uEnvRotationYawRad"), uniforms.envRotationYawRad ?? 0.0);
+  gl.uniform1f(gl.getUniformLocation(program, "uEnvRotationPitchRad"), uniforms.envRotationPitchRad ?? 0.0);
   gl.uniform1i(gl.getUniformLocation(program, "uUseEnv"), uniforms.useEnv);
   gl.uniform1i(gl.getUniformLocation(program, "uEnvMarginalCdf"), uniforms.envMarginalCdfUnit ?? 0);
   gl.uniform1i(gl.getUniformLocation(program, "uEnvConditionalCdf"), uniforms.envConditionalCdfUnit ?? 0);

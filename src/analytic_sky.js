@@ -1,4 +1,5 @@
 export const ANALYTIC_SKY_ID = "analytic://preetham-perez";
+export const UNIFORM_ENV_ID = "analytic://uniform";
 
 export const DEFAULT_ANALYTIC_SKY_SETTINGS = {
   width: 1024,
@@ -11,6 +12,12 @@ export const DEFAULT_ANALYTIC_SKY_SETTINGS = {
   sunAngularRadiusDeg: 0.27,
   groundAlbedo: 0.2,
   horizonSoftness: 0.12
+};
+
+export const DEFAULT_UNIFORM_ENV_SETTINGS = {
+  width: 1024,
+  height: 512,
+  color: [1.0, 1.0, 1.0]
 };
 
 function degToRad(deg) {
@@ -108,6 +115,67 @@ export function analyticSkyCacheKey(rawSettings = {}) {
     formatFloat(s.groundAlbedo),
     formatFloat(s.horizonSoftness)
   ].join("|");
+}
+
+export function normalizeUniformEnvSettings(raw = {}) {
+  const settings = { ...DEFAULT_UNIFORM_ENV_SETTINGS, ...(raw || {}) };
+  const width = Number(settings.width);
+  const height = Number(settings.height);
+  if (!Number.isInteger(width) || width <= 0) {
+    throw new Error("Uniform environment width must be a positive integer.");
+  }
+  if (!Number.isInteger(height) || height <= 0) {
+    throw new Error("Uniform environment height must be a positive integer.");
+  }
+  if (!Array.isArray(settings.color) || settings.color.length !== 3) {
+    throw new Error("Uniform environment color must be an RGB triplet.");
+  }
+  const color = settings.color.map((v, idx) => {
+    const value = Number(v);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`Uniform environment color component ${idx} must be in [0, 1].`);
+    }
+    return value;
+  });
+  return { width, height, color };
+}
+
+export function uniformEnvCacheKey(rawSettings = {}) {
+  const s = normalizeUniformEnvSettings(rawSettings);
+  return [
+    s.width,
+    s.height,
+    formatFloat(s.color[0]),
+    formatFloat(s.color[1]),
+    formatFloat(s.color[2])
+  ].join("|");
+}
+
+export async function generateUniformEnvironment(rawSettings = {}, logger = null) {
+  const settings = normalizeUniformEnvSettings(rawSettings);
+  const cacheKey = uniformEnvCacheKey(settings);
+  const pixelCount = settings.width * settings.height;
+  const data = new Float32Array(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const base = i * 4;
+    data[base] = settings.color[0];
+    data[base + 1] = settings.color[1];
+    data[base + 2] = settings.color[2];
+    data[base + 3] = 1.0;
+  }
+  if (logger) {
+    logger.info(
+      `Uniform environment generated (${settings.width}x${settings.height}, color ${settings.color.map((v) => v.toFixed(2)).join(",")})`
+    );
+  }
+  return {
+    source: UNIFORM_ENV_ID,
+    version: `${UNIFORM_ENV_ID}:${cacheKey}`,
+    settings,
+    width: settings.width,
+    height: settings.height,
+    data
+  };
 }
 
 export function computeSunDirection(sunAzimuthDeg, sunElevationDeg) {

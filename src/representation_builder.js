@@ -1,6 +1,8 @@
 import { moleculeToGeometry } from "./molecular.js";
 import { buildBackboneCartoon, buildSheetHbondCylinders } from "./cartoon.js";
-import { computeSESWebGL, sesToTriangles } from "./surface_webgl.js";
+import { computeSESWebGL, sesToTriangles, extractIsosurfaceFromScalarGrid } from "./surface_webgl.js";
+import { SCENE_OBJECT_TYPES } from "./scene_graph.js";
+import { mergeTriangleMeshes } from "./scene_controller.js";
 
 const ELEMENT_RADII = {
   H: 1.20,
@@ -131,6 +133,121 @@ function buildSesTriangles(molData, display, material) {
   };
 }
 
+function buildVolumeIsosurfaceTriangles(volumeData, display, material) {
+  if (!volumeData || !(volumeData.data instanceof Float32Array) || !Array.isArray(volumeData.dims)) {
+    throw new Error("Isosurface representation requires volume grid data.");
+  }
+  const minValue = Number(volumeData.minValue ?? 0.0);
+  const maxValue = Number(volumeData.maxValue ?? 1.0);
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue <= minValue) {
+    throw new Error("Volume grid min/max values are invalid.");
+  }
+
+  const absMax = Number(
+    volumeData.absMax ?? Math.max(Math.abs(minValue), Math.abs(maxValue))
+  );
+  if (!Number.isFinite(absMax) || absMax <= 0) {
+    throw new Error("Volume grid has no non-zero values for isosurface extraction.");
+  }
+  const minAbsNonZeroInput = Number(volumeData.minAbsNonZero ?? 0);
+  const minAbsNonZero = Number.isFinite(minAbsNonZeroInput) && minAbsNonZeroInput > 0
+    ? minAbsNonZeroInput
+    : Math.max(absMax * 1e-6, 1e-12);
+
+  // isoLevel is normalized to [0, 1] and mapped logarithmically over |value|.
+  const isoNorm = Number(display?.isoLevel ?? 0.77);
+  if (!Number.isFinite(isoNorm) || isoNorm < 0 || isoNorm > 1) {
+    throw new Error("Iso-level must be within [0, 1].");
+  }
+  const lower = Math.max(minAbsNonZero, absMax * 1e-12, 1e-12);
+  const upper = Math.max(absMax, lower * (1 + 1e-9));
+  const isoAbs = upper <= lower
+    ? upper
+    : Math.exp(Math.log(lower) + isoNorm * (Math.log(upper) - Math.log(lower)));
+
+  const [nx, ny, nz] = volumeData.dims;
+  const [sx, sy, sz] = volumeData.spacing || [null, null, null];
+  if (!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(sz)) {
+    throw new Error("Volume grid spacing metadata is missing.");
+  }
+
+  const meshPositive = extractIsosurfaceFromScalarGrid(
+    {
+      nx,
+      ny,
+      nz,
+      data: volumeData.data,
+      origin: volumeData.origin,
+      axisVectors: [
+        [sx, 0, 0],
+        [0, sy, 0],
+        [0, 0, sz]
+      ]
+    },
+    isoAbs
+  );
+  const meshNegative = extractIsosurfaceFromScalarGrid(
+    {
+      nx,
+      ny,
+      nz,
+      data: volumeData.data,
+      origin: volumeData.origin,
+      axisVectors: [
+        [sx, 0, 0],
+        [0, sy, 0],
+        [0, 0, sz]
+      ]
+    },
+    -isoAbs
+  );
+
+  const positiveColor = Array.isArray(display?.isoPositiveColor) && display.isoPositiveColor.length === 3
+    ? [display.isoPositiveColor[0], display.isoPositiveColor[1], display.isoPositiveColor[2]]
+    : [0.15, 0.85, 0.2];
+  const negativeColor = Array.isArray(display?.isoNegativeColor) && display.isoNegativeColor.length === 3
+    ? [display.isoNegativeColor[0], display.isoNegativeColor[1], display.isoNegativeColor[2]]
+    : [0.9, 0.2, 0.2];
+
+  const meshes = [];
+  if (meshPositive && meshPositive.indices && meshPositive.indices.length > 0) {
+    const triPos = sesToTriangles(meshPositive, positiveColor);
+    meshes.push({
+      positions: triPos.positions,
+      indices: triPos.indices,
+      normals: triPos.normals,
+      triColors: triPos.triColors,
+      triFlags: new Float32Array(triPos.indices.length / 3)
+    });
+  }
+  if (meshNegative && meshNegative.indices && meshNegative.indices.length > 0) {
+    const triNeg = sesToTriangles(meshNegative, negativeColor);
+    meshes.push({
+      positions: triNeg.positions,
+      indices: triNeg.indices,
+      normals: triNeg.normals,
+      triColors: triNeg.triColors,
+      triFlags: new Float32Array(triNeg.indices.length / 3)
+    });
+  }
+
+  if (meshes.length === 0) {
+    throw new Error("Isosurface extraction produced no triangles.");
+  }
+
+  let merged = meshes[0];
+  for (let i = 1; i < meshes.length; i += 1) {
+    merged = mergeTriangleMeshes(merged, meshes[i]);
+  }
+  return {
+    positions: merged.positions,
+    indices: merged.indices,
+    normals: merged.normals,
+    triColors: merged.triColors,
+    triFlags: merged.triFlags
+  };
+}
+
 export function buildRepresentationGeometry(input) {
   const { object, representation, logger } = input || {};
   if (!object || !representation) {
@@ -150,6 +267,29 @@ export function buildRepresentationGeometry(input) {
   let cylinders = [];
   let sphereAtomIndices = null;
   let cylinderBondAtomPairs = null;
+
+  if (object.type === SCENE_OBJECT_TYPES.VOLUME) {
+    if (display.style === "isosurface") {
+      triangles = buildVolumeIsosurfaceTriangles(object.volumeData, display, material);
+    } else if (display.style === "volumetric") {
+      // Volumetric style is ray-marched in the shader and does not emit triangle/sphere/cylinder geometry.
+      triangles = emptyTriangleMesh();
+    } else {
+      throw new Error(`Unsupported volume display style: ${display.style}`);
+    }
+
+    return {
+      positions: triangles.positions,
+      indices: triangles.indices,
+      normals: triangles.normals,
+      triColors: triangles.triColors,
+      triFlags: triangles.triFlags,
+      spheres,
+      cylinders,
+      sphereAtomIndices,
+      cylinderBondAtomPairs
+    };
+  }
 
   if (display.style === "cartoon") {
     if (!molData?.atoms?.length) {
@@ -201,6 +341,7 @@ export function representationGeometryCacheKey(object, representation) {
     objectType: object.type,
     atomCount: object.atomCount,
     bondCount: object.molData?.bonds?.length || 0,
+    volumeVersion: object.volumeData?.version ?? null,
     display: representation.display,
     material: representation.material,
     visible: representation.visible
