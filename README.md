@@ -15,7 +15,7 @@ Created by Mikael Hvidtfeldt Christensen, in close collaboration with Claude Cod
 - Path tracing with importance-sampled environment and direct lighting
 - PDB, SDF/MOL, and Gaussian CUBE file import
 - Solvent-Exluded Surfaces (Molecular surface computed via GPU-accelerated distance-field evaluation)
-- Seven molecular display styles including cartoon ribbons and solvent-excluded surfaces
+- Seven molecular display styles including cartoon ribbons (with automatic DSSP detection)
 - Four physically-based material models
 - Analytic Preetham-Perez sky, uniform, and HDR environment lighting
 - Volumetric rendering and isosurface extraction
@@ -56,6 +56,7 @@ PCA alignment gathers all atom positions from the hovered scene-graph object, co
 ## Rendering Pipeline
 
 ### Path Tracing
+
 Monte Carlo path tracing runs in a WebGL2 fragment shader. Each frame traces one or more samples per pixel (configurable 1 -- 8) and accumulates into a floating-point texture. The display pass reads the accumulation buffer and applies tone mapping and exposure.
 
 - **Max bounces**: 0 -- 6
@@ -63,6 +64,7 @@ Monte Carlo path tracing runs in a WebGL2 fragment shader. Each frame traces one
 - **Multiple importance sampling**: combines environment-map sampling with BSDF sampling using balance heuristic weights
 
 ### Acceleration Structure
+
 A **Surface-Area-Heuristic (SAH) BVH** is built on the CPU over a unified primitive set (spheres, cylinders, triangles). The flattened BVH is packed into a 2D texture (4 vec4 per node) for GPU traversal with stackless early-termination.
 ---
 

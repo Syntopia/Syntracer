@@ -48,6 +48,7 @@ test("normalizePreviewQualitySettings applies defaults", () => {
     ssaoRadiusPx: 3.0,
     ssaoDepthStrength: 0.2,
     ssaoEdgeStrength: 0.25,
+    edgeAccentStrength: 0.0,
     lightIntensityScale: 1.0
   });
 });
@@ -60,6 +61,7 @@ test("normalizePreviewQualitySettings clamps values", () => {
     ssaoRadiusPx: 99,
     ssaoDepthStrength: 2,
     ssaoEdgeStrength: -1,
+    edgeAccentStrength: 99,
     lightIntensityScale: 99
   });
   assert.deepEqual(settings, {
@@ -69,6 +71,7 @@ test("normalizePreviewQualitySettings clamps values", () => {
     ssaoRadiusPx: 12.0,
     ssaoDepthStrength: 1.0,
     ssaoEdgeStrength: 0.0,
+    edgeAccentStrength: 1.0,
     lightIntensityScale: 3.0
   });
 });

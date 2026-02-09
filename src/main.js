@@ -128,6 +128,7 @@ const ambientColorInput = document.getElementById("ambientColor");
 const samplesPerBounceInput = document.getElementById("samplesPerBounce");
 const maxFramesInput = document.getElementById("maxFrames");
 const toneMapSelect = document.getElementById("toneMapSelect");
+const edgeAccentInput = document.getElementById("edgeAccent");
 const shadowToggle = document.getElementById("shadowToggle");
 const previewShadowsToggle = document.getElementById("previewShadowsToggle");
 const previewSsaoToggle = document.getElementById("previewSsaoToggle");
@@ -241,6 +242,7 @@ const renderState = {
   dofAperture: 0.03,
   dofFocusDistance: 4.0,
   toneMap: "aces",
+  edgeAccent: 0.0,
   ambientIntensity: 0.0,
   ambientColor: [1.0, 1.0, 1.0],
   envUrl: null,
@@ -1503,6 +1505,7 @@ function updateMaterialState() {
   renderState.samplesPerBounce = clamp(Number(samplesPerBounceInput.value), 1, 8);
   renderState.castShadows = shadowToggle.checked;
   renderState.toneMap = toneMapSelect?.value || "reinhard";
+  renderState.edgeAccent = clamp(Number(edgeAccentInput?.value ?? 0.0), 0.0, 1.0);
   resetAccumulation("Render settings updated.");
 }
 
@@ -2741,6 +2744,7 @@ function renderPreviewFrameInternal() {
       ssaoRadiusPx: renderState.previewSsaoRadiusPx,
       ssaoDepthStrength: renderState.previewSsaoDepthStrength,
       ssaoEdgeStrength: renderState.previewSsaoEdgeStrength,
+      edgeAccentStrength: renderState.edgeAccent,
       lightIntensityScale: renderState.previewLightIntensity
     },
     logger
@@ -3052,6 +3056,7 @@ setTraceUniforms(gl, traceProgram, {
     displayUnit: 0,
     displayResolution: [displayWidth, displayHeight],
     toneMap: renderState.toneMap,
+    edgeAccentStrength: renderState.edgeAccent,
     transparentBg: renderState.transparentBg
   });
 
@@ -3223,6 +3228,7 @@ async function hiresRender() {
       displayUnit: 0,
       displayResolution: [width, height],
       toneMap: renderState.toneMap,
+      edgeAccentStrength: renderState.edgeAccent,
       transparentBg: transparent ? 1 : 0
     });
     gl.useProgram(displayProgram);
@@ -3761,6 +3767,7 @@ dofEnableToggle?.addEventListener("change", () => {
 dofApertureInput?.addEventListener("input", updateMaterialState);
 dofFocusDistanceInput?.addEventListener("input", updateMaterialState);
 toneMapSelect?.addEventListener("change", updateMaterialState);
+edgeAccentInput?.addEventListener("input", updateMaterialState);
 ambientIntensityInput.addEventListener("input", updateMaterialState);
 ambientColorInput.addEventListener("input", updateMaterialState);
 samplesPerBounceInput.addEventListener("input", updateMaterialState);

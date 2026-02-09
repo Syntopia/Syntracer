@@ -1157,6 +1157,17 @@
                 <option value="linear">Linear</option>
               </select>
 
+              <div style="height: 8px"></div>
+              <label for="edgeAccent">Edge accent</label>
+              <div class="slider-input">
+                <input id="edgeAccent" type="range" min="0.0" max="1.0" step="0.01" value="0.00" />
+                <input type="text" class="value-input" data-for="edgeAccent" value="0.00" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="edgeAccent">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="edgeAccent">◀</button>
+                </div>
+              </div>
+
               <div style="height: 12px"></div>
               <div class="checkbox-group">
                 <input id="dofEnable" type="checkbox" />

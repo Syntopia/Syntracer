@@ -194,6 +194,7 @@ export function normalizePreviewQualitySettings(input) {
     ssaoRadiusPx: clampNumber(input?.ssaoRadiusPx, 1.0, 12.0, 3.0),
     ssaoDepthStrength: clampNumber(input?.ssaoDepthStrength, 0.0, 1.0, 0.2),
     ssaoEdgeStrength: clampNumber(input?.ssaoEdgeStrength, 0.0, 1.0, 0.25),
+    edgeAccentStrength: clampNumber(input?.edgeAccentStrength, 0.0, 1.0, 0.0),
     lightIntensityScale: clampNumber(input?.lightIntensityScale, 0.0, 3.0, 1.0)
   };
 }
@@ -798,6 +799,7 @@ uniform vec3 uCameraPos;
 uniform float uSsaoRadiusPx;
 uniform float uSsaoDepthStrength;
 uniform float uSsaoEdgeStrength;
+uniform float uEdgeAccentStrength;
 
 layout(location = 0) out vec4 outColor;
 
@@ -905,6 +907,21 @@ vec3 computeSsrFallback(vec2 uv, vec3 baseColor, vec3 normal) {
   return mix(baseColor, reflected, clamp(weight, 0.0, 0.35));
 }
 
+float edgeLuma(vec3 c) {
+  vec3 compressed = c / (vec3(1.0) + c);
+  return dot(compressed, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float computeEdgeAccent(vec2 uv) {
+  vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+  float lL = edgeLuma(texture(uSceneColor, clamp(uv + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
+  float lR = edgeLuma(texture(uSceneColor, clamp(uv + vec2(texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
+  float lD = edgeLuma(texture(uSceneColor, clamp(uv + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999))).rgb);
+  float lU = edgeLuma(texture(uSceneColor, clamp(uv + vec2(0.0, texel.y), vec2(0.001), vec2(0.999))).rgb);
+  float grad = length(vec2(lR - lL, lU - lD));
+  return smoothstep(0.05, 0.28, grad);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uResolution;
   vec4 scene = texture(uSceneColor, uv);
@@ -926,6 +943,10 @@ void main() {
     if (uEnableSsr == 1) {
       color = computeSsrFallback(uv, color, normal);
     }
+    if (uEdgeAccentStrength > 0.0) {
+      float edge = computeEdgeAccent(uv);
+      color *= (1.0 - 0.7 * edge * clamp(uEdgeAccentStrength, 0.0, 1.0));
+    }
     outColor = vec4(color, 1.0);
     return;
   }
@@ -943,6 +964,10 @@ void main() {
     vec3 ssrDepth = computeSsr(uv, color, pos, normal, roughnessHint);
     vec3 ssrFallback = computeSsrFallback(uv, color, normal);
     color = mix(ssrDepth, ssrFallback, 0.35);
+  }
+  if (uEdgeAccentStrength > 0.0) {
+    float edge = computeEdgeAccent(uv);
+    color *= (1.0 - 0.7 * edge * clamp(uEdgeAccentStrength, 0.0, 1.0));
   }
   outColor = vec4(color, 1.0);
 }
@@ -1502,6 +1527,7 @@ function renderComposite(previewState, params) {
   gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoRadiusPx"), quality.ssaoRadiusPx);
   gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoDepthStrength"), quality.ssaoDepthStrength);
   gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoEdgeStrength"), quality.ssaoEdgeStrength);
+  gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uEdgeAccentStrength"), quality.edgeAccentStrength);
   gl.uniform3fv(gl.getUniformLocation(previewState.compositeProgram, "uCameraPos"), new Float32Array(camera.origin));
   gl.uniformMatrix4fv(gl.getUniformLocation(previewState.compositeProgram, "uInvViewProj"), false, invertMatrix4(viewProj));
 

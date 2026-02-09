@@ -1841,6 +1841,7 @@ uniform sampler2D uDisplayTex;
 uniform vec2 uDisplayResolution;
 uniform int uToneMapMode;
 uniform int uTransparentBg;
+uniform float uEdgeAccentStrength;
 
 vec3 toneMapReinhard(vec3 c) {
   return c / (vec3(1.0) + c);
@@ -1855,6 +1856,21 @@ vec3 toneMapACES(vec3 x) {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+float edgeLuma(vec3 c) {
+  vec3 compressed = c / (vec3(1.0) + c);
+  return dot(compressed, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float computeEdgeAccent(vec2 uv) {
+  vec2 texel = 1.0 / max(uDisplayResolution, vec2(1.0));
+  float lL = edgeLuma(texture(uDisplayTex, clamp(uv + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
+  float lR = edgeLuma(texture(uDisplayTex, clamp(uv + vec2(texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
+  float lD = edgeLuma(texture(uDisplayTex, clamp(uv + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999))).rgb);
+  float lU = edgeLuma(texture(uDisplayTex, clamp(uv + vec2(0.0, texel.y), vec2(0.001), vec2(0.999))).rgb);
+  float grad = length(vec2(lR - lL, lU - lD));
+  return smoothstep(0.05, 0.28, grad);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uDisplayResolution;
   vec4 raw = texture(uDisplayTex, uv);
@@ -1863,6 +1879,10 @@ void main() {
     mapped = toneMapACES(raw.rgb);
   } else if (uToneMapMode == 2) {
     mapped = toneMapReinhard(raw.rgb);
+  }
+  if (uEdgeAccentStrength > 0.0) {
+    float edge = computeEdgeAccent(uv);
+    mapped *= (1.0 - 0.7 * edge * clamp(uEdgeAccentStrength, 0.0, 1.0));
   }
   if (uTransparentBg == 1) {
     outColor = vec4(mapped, raw.a);
@@ -2164,6 +2184,7 @@ export function setDisplayUniforms(gl, program, uniforms) {
   gl.uniform2fv(gl.getUniformLocation(program, "uDisplayResolution"), uniforms.displayResolution);
   const mode = uniforms.toneMap === "aces" ? 1 : (uniforms.toneMap === "linear" ? 0 : 2);
   gl.uniform1i(gl.getUniformLocation(program, "uToneMapMode"), mode);
+  gl.uniform1f(gl.getUniformLocation(program, "uEdgeAccentStrength"), uniforms.edgeAccentStrength ?? 0.0);
   gl.uniform1i(gl.getUniformLocation(program, "uTransparentBg"), uniforms.transparentBg || 0);
 }
 
