@@ -1881,6 +1881,10 @@ uniform vec2 uDisplayResolution;
 uniform int uToneMapMode;
 uniform int uTransparentBg;
 uniform float uEdgeAccentStrength;
+uniform int uEdgeAccentMode;
+uniform vec3 uCamForward;
+uniform vec3 uCamRight;
+uniform vec3 uCamUp;
 
 vec3 toneMapReinhard(vec3 c) {
   return c / (vec3(1.0) + c);
@@ -1949,6 +1953,19 @@ float computeAuxEdgeAccent(vec2 uv) {
   return max(nEdge, dEdge);
 }
 
+float computeGrazingAngleAccent(vec2 uv) {
+  vec4 aux = texture(uAuxTex, uv);
+  if (aux.a <= 0.0) {
+    return 0.0;
+  }
+  vec3 normal = decodeAuxNormal(aux);
+  vec2 uvNdc = uv * 2.0 - 1.0;
+  vec3 rayDir = normalize(uCamForward + uvNdc.x * uCamRight + uvNdc.y * uCamUp);
+  vec3 viewDir = normalize(-rayDir);
+  float ndotv = clamp(abs(dot(normal, viewDir)), 0.0, 1.0);
+  return smoothstep(0.1, 0.95, 1.0 - ndotv);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uDisplayResolution;
   vec4 raw = texture(uDisplayTex, uv);
@@ -1959,9 +1976,14 @@ void main() {
     mapped = toneMapReinhard(raw.rgb);
   }
   if (uEdgeAccentStrength > 0.0) {
-    float edgeColor = computeEdgeAccent(uv);
-    float edgeAux = computeAuxEdgeAccent(uv);
-    float edge = max(edgeColor * 0.35, edgeAux);
+    float edge = 0.0;
+    if (uEdgeAccentMode == 1) {
+      edge = computeGrazingAngleAccent(uv);
+    } else {
+      float edgeColor = computeEdgeAccent(uv);
+      float edgeAux = computeAuxEdgeAccent(uv);
+      edge = max(edgeColor * 0.35, edgeAux);
+    }
     mapped *= (1.0 - 0.7 * edge * clamp(uEdgeAccentStrength, 0.0, 1.0));
   }
   if (uTransparentBg == 1) {
@@ -2146,6 +2168,11 @@ function mapMaterialMode(materialMode) {
   return 0;
 }
 
+function mapEdgeAccentMode(edgeAccentMode) {
+  if (edgeAccentMode === "grazing-angle" || edgeAccentMode === 1) return 1;
+  return 0;
+}
+
 export function setTraceUniforms(gl, program, uniforms) {
   gl.useProgram(program);
   gl.uniform1i(gl.getUniformLocation(program, "uBvhTex"), uniforms.bvhUnit);
@@ -2269,6 +2296,7 @@ export function setTraceUniforms(gl, program, uniforms) {
 }
 
 export function setDisplayUniforms(gl, program, uniforms) {
+  const edgeAccentMode = mapEdgeAccentMode(uniforms.edgeAccentMode);
   gl.useProgram(program);
   gl.uniform1i(gl.getUniformLocation(program, "uDisplayTex"), uniforms.displayUnit);
   gl.uniform1i(gl.getUniformLocation(program, "uAuxTex"), uniforms.auxUnit ?? 1);
@@ -2276,6 +2304,10 @@ export function setDisplayUniforms(gl, program, uniforms) {
   const mode = uniforms.toneMap === "aces" ? 1 : (uniforms.toneMap === "linear" ? 0 : 2);
   gl.uniform1i(gl.getUniformLocation(program, "uToneMapMode"), mode);
   gl.uniform1f(gl.getUniformLocation(program, "uEdgeAccentStrength"), uniforms.edgeAccentStrength ?? 0.0);
+  gl.uniform1i(gl.getUniformLocation(program, "uEdgeAccentMode"), edgeAccentMode);
+  gl.uniform3fv(gl.getUniformLocation(program, "uCamForward"), uniforms.camForward ?? [0, 0, -1]);
+  gl.uniform3fv(gl.getUniformLocation(program, "uCamRight"), uniforms.camRight ?? [1, 0, 0]);
+  gl.uniform3fv(gl.getUniformLocation(program, "uCamUp"), uniforms.camUp ?? [0, 1, 0]);
   gl.uniform1i(gl.getUniformLocation(program, "uTransparentBg"), uniforms.transparentBg || 0);
 }
 
@@ -2285,4 +2317,8 @@ export function drawFullscreen(gl) {
 
 export function __test__mapMaterialMode(materialMode) {
   return mapMaterialMode(materialMode);
+}
+
+export function __test__mapEdgeAccentMode(edgeAccentMode) {
+  return mapEdgeAccentMode(edgeAccentMode);
 }

@@ -130,6 +130,7 @@ const samplesPerBounceInput = document.getElementById("samplesPerBounce");
 const maxFramesInput = document.getElementById("maxFrames");
 const toneMapSelect = document.getElementById("toneMapSelect");
 const edgeAccentInput = document.getElementById("edgeAccent");
+const edgeAccentModeSelect = document.getElementById("edgeAccentMode");
 const shadowToggle = document.getElementById("shadowToggle");
 const previewShadowsToggle = document.getElementById("previewShadowsToggle");
 const previewSsrToggle = document.getElementById("previewSsrToggle");
@@ -240,6 +241,7 @@ const renderState = {
   dofFocusDistance: 4.0,
   toneMap: "aces",
   edgeAccent: 0.5,
+  edgeAccentMode: "screen-space",
   ambientIntensity: 0.0,
   ambientColor: [1.0, 1.0, 1.0],
   envUrl: null,
@@ -298,6 +300,10 @@ const interactionState = {
 
 const AUTO_FIT_ZOOM_FACTOR = 1.8;
 const PREVIEW_EDGE_ACCENT_SCALE = 0.5;
+const EDGE_ACCENT_MODES = {
+  SCREEN_SPACE: "screen-space",
+  GRAZING_ANGLE: "grazing-angle"
+};
 const PREVIEW_FPS_IDLE_MS = 1000;
 const FPS_RESET_GAP_MS = 750;
 const FPS_MIN_DT_SAMPLES = 8;
@@ -1610,6 +1616,10 @@ function updateMaterialState() {
   renderState.castShadows = shadowToggle.checked;
   renderState.toneMap = toneMapSelect?.value || "reinhard";
   renderState.edgeAccent = clamp(Number(edgeAccentInput?.value ?? 0.0), 0.0, 1.0);
+  const edgeAccentMode = edgeAccentModeSelect?.value || EDGE_ACCENT_MODES.SCREEN_SPACE;
+  renderState.edgeAccentMode = Object.values(EDGE_ACCENT_MODES).includes(edgeAccentMode)
+    ? edgeAccentMode
+    : EDGE_ACCENT_MODES.SCREEN_SPACE;
   resetAccumulation("Render settings updated.");
 }
 
@@ -3167,6 +3177,10 @@ setTraceUniforms(gl, traceProgram, {
     displayResolution: [displayWidth, displayHeight],
     toneMap: renderState.toneMap,
     edgeAccentStrength,
+    edgeAccentMode: renderState.edgeAccentMode,
+    camForward: camera.forward,
+    camRight: camera.right,
+    camUp: camera.up,
     transparentBg: renderState.transparentBg
   });
 
@@ -3328,6 +3342,7 @@ async function hiresRender() {
   // Read pixels — render display pass to an offscreen RGBA8 framebuffer
   if (!cancelled) {
     const { displayProgram } = ensureWebGL();
+    const camera = computeCameraVectors();
 
     const readTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, readTex);
@@ -3349,6 +3364,10 @@ async function hiresRender() {
       displayResolution: [width, height],
       toneMap: renderState.toneMap,
       edgeAccentStrength: renderState.dofEnabled ? 0.0 : renderState.edgeAccent,
+      edgeAccentMode: renderState.edgeAccentMode,
+      camForward: camera.forward,
+      camRight: camera.right,
+      camUp: camera.up,
       transparentBg: transparent ? 1 : 0
     });
     gl.useProgram(displayProgram);
@@ -3890,6 +3909,7 @@ dofApertureInput?.addEventListener("input", updateMaterialState);
 dofFocusDistanceInput?.addEventListener("input", updateMaterialState);
 toneMapSelect?.addEventListener("change", updateMaterialState);
 edgeAccentInput?.addEventListener("input", updateMaterialState);
+edgeAccentModeSelect?.addEventListener("change", updateMaterialState);
 ambientIntensityInput.addEventListener("input", updateMaterialState);
 ambientColorInput.addEventListener("input", updateMaterialState);
 samplesPerBounceInput.addEventListener("input", updateMaterialState);
