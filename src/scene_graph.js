@@ -537,6 +537,63 @@ export function addRepresentationToObject(sceneGraph, objectId) {
   return representation;
 }
 
+function normalizeSelection(sceneGraph) {
+  if (!sceneGraph || !Array.isArray(sceneGraph.objects)) {
+    throw new Error("Scene graph is invalid.");
+  }
+  if (sceneGraph.objects.length === 0) {
+    sceneGraph.selection = null;
+    return;
+  }
+
+  const selection = sceneGraph.selection;
+  if (!selection || !selection.objectId) {
+    sceneGraph.selection = { kind: "object", objectId: sceneGraph.objects[0].id, representationId: null };
+    return;
+  }
+
+  const object = sceneGraph.objects.find((o) => o.id === selection.objectId);
+  if (!object) {
+    sceneGraph.selection = { kind: "object", objectId: sceneGraph.objects[0].id, representationId: null };
+    return;
+  }
+
+  if (selection.kind === "representation" && selection.representationId) {
+    const hasRep = (object.representations || []).some((rep) => rep.id === selection.representationId);
+    if (!hasRep) {
+      sceneGraph.selection = { kind: "object", objectId: object.id, representationId: null };
+    }
+    return;
+  }
+
+  sceneGraph.selection = { kind: "object", objectId: object.id, representationId: null };
+}
+
+export function deleteObjectFromSceneGraph(sceneGraph, objectId) {
+  if (!sceneGraph || !Array.isArray(sceneGraph.objects)) {
+    throw new Error("Scene graph is invalid.");
+  }
+  const index = sceneGraph.objects.findIndex((o) => o.id === objectId);
+  if (index < 0) {
+    throw new Error(`Scene object not found: ${objectId}`);
+  }
+  const [removed] = sceneGraph.objects.splice(index, 1);
+  normalizeSelection(sceneGraph);
+  return removed;
+}
+
+export function deleteRepresentationFromObject(sceneGraph, objectId, representationId) {
+  const object = findObject(sceneGraph, objectId);
+  const representations = object.representations || [];
+  const index = representations.findIndex((rep) => rep.id === representationId);
+  if (index < 0) {
+    throw new Error(`Representation not found: ${representationId}`);
+  }
+  const [removed] = representations.splice(index, 1);
+  normalizeSelection(sceneGraph);
+  return removed;
+}
+
 export function updateRepresentation(sceneGraph, objectId, representationId, patch) {
   const { object, representation } = findRepresentation(sceneGraph, objectId, representationId);
   if (!patch || typeof patch !== "object") {

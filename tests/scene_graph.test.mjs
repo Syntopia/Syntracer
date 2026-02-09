@@ -9,6 +9,8 @@ import {
   toggleObjectVisibility,
   toggleRepresentationVisibility,
   addRepresentationToObject,
+  deleteObjectFromSceneGraph,
+  deleteRepresentationFromObject,
   updateRepresentation,
   selectRepresentation,
   partitionMolDataByType,
@@ -186,4 +188,32 @@ test("can add and update representations", () => {
   selectRepresentation(graph, protein.id, rep.id);
   assert.equal(graph.selection.kind, "representation");
   assert.equal(graph.selection.representationId, rep.id);
+});
+
+test("can delete representation and normalize selection", () => {
+  const graph = createSceneGraphFromMolData(makeMixedMolData(), { sourceKind: "pdb" });
+  const protein = graph.objects.find((o) => o.type === SCENE_OBJECT_TYPES.PROTEIN);
+  const extra = addRepresentationToObject(graph, protein.id);
+  selectRepresentation(graph, protein.id, extra.id);
+
+  const removed = deleteRepresentationFromObject(graph, protein.id, extra.id);
+  assert.equal(removed.id, extra.id);
+  assert.equal(protein.representations.some((r) => r.id === extra.id), false);
+  assert.equal(graph.selection.kind, "object");
+  assert.equal(graph.selection.objectId, protein.id);
+});
+
+test("can delete object and normalize selection", () => {
+  const graph = createSceneGraphFromMolData(makeMixedMolData(), { sourceKind: "pdb" });
+  const firstObjectId = graph.objects[0].id;
+  const removed = deleteObjectFromSceneGraph(graph, firstObjectId);
+
+  assert.equal(removed.id, firstObjectId);
+  assert.equal(graph.objects.some((o) => o.id === firstObjectId), false);
+  if (graph.objects.length > 0) {
+    assert.equal(graph.selection.kind, "object");
+    assert.equal(graph.selection.objectId, graph.objects[0].id);
+  } else {
+    assert.equal(graph.selection, null);
+  }
 });

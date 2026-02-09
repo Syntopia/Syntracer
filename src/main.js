@@ -28,6 +28,8 @@ import {
   selectRepresentation,
   toggleObjectVisibility,
   toggleRepresentationVisibility,
+  deleteObjectFromSceneGraph,
+  deleteRepresentationFromObject,
   listVisibleRepresentations,
   findRepresentation,
   findObject,
@@ -52,6 +54,13 @@ import {
   drawFullscreen,
   MAX_BRUTE_FORCE_TRIS
 } from "./webgl.js";
+import {
+  createPreviewBackend,
+  disposePreviewBackend,
+  renderPreviewFrame,
+  choosePreviewVolumeTechnique
+} from "./preview_webgl.js";
+import { createRenderModeController, RENDER_MODES } from "./render_mode_controller.js";
 
 const canvas = document.getElementById("view");
 const canvasContainer = canvas?.closest(".canvas-container");
@@ -120,6 +129,13 @@ const samplesPerBounceInput = document.getElementById("samplesPerBounce");
 const maxFramesInput = document.getElementById("maxFrames");
 const toneMapSelect = document.getElementById("toneMapSelect");
 const shadowToggle = document.getElementById("shadowToggle");
+const previewShadowsToggle = document.getElementById("previewShadowsToggle");
+const previewSsaoToggle = document.getElementById("previewSsaoToggle");
+const previewSsaoRadiusInput = document.getElementById("previewSsaoRadius");
+const previewSsaoDepthStrengthInput = document.getElementById("previewSsaoDepthStrength");
+const previewSsaoEdgeStrengthInput = document.getElementById("previewSsaoEdgeStrength");
+const previewSsrToggle = document.getElementById("previewSsrToggle");
+const previewLightIntensityInput = document.getElementById("previewLightIntensity");
 const volumeEnableToggle = document.getElementById("volumeEnable");
 const volumeColorInput = document.getElementById("volumeColor");
 const volumeDensityInput = document.getElementById("volumeDensity");
@@ -171,18 +187,22 @@ const hiresCloseBtn = document.getElementById("hiresClose");
 const hiresCancelBtn = document.getElementById("hiresCancel");
 const hiresProgressFill = document.getElementById("hiresProgressFill");
 const hiresProgressText = document.getElementById("hiresProgressText");
+const renderModePathtracingBtn = document.getElementById("renderModePathtracing");
+const renderModePreviewBtn = document.getElementById("renderModePreview");
 
 const tabButtons = Array.from(document.querySelectorAll("[data-tab-button]"));
 const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
 
 let sceneData = null;
 let glState = null;
+let previewState = null;
 let isRendering = false;
 let isLoading = false;
 let glInitFailed = false;
 let sceneGraph = null;
 let currentMolMeta = null;
 const repGeometryCache = new Map();
+const renderModeController = createRenderModeController(RENDER_MODES.PATHTRACING);
 
 const cameraState = {
   target: [0, 0, 0],
@@ -235,6 +255,13 @@ const renderState = {
   tMin: 1e-5,
   samplesPerBounce: 1,
   castShadows: true,
+  previewShadows: true,
+  previewSsao: true,
+  previewSsr: true,
+  previewSsaoRadiusPx: 3.0,
+  previewSsaoDepthStrength: 0.2,
+  previewSsaoEdgeStrength: 0.25,
+  previewLightIntensity: 1.0,
   volumeEnabled: false,
   volumeColor: [0.435, 0.643, 1.0],
   volumeDensity: 1.0,
@@ -244,7 +271,7 @@ const renderState = {
   volumeThreshold: 0.0,
   lights: [
     // Camera-relative studio lighting: key, fill, rim
-    { enabled: true, azimuth: -40, elevation: -30, intensity: 5.0, angle: 22, color: [1.0, 1.0, 1.0] },
+    { enabled: true, azimuth: -40, elevation: -30, intensity: 5.0, angle: 5, color: [1.0, 1.0, 1.0] },
     { enabled: true, azimuth: 40, elevation: 0, intensity: 0.6, angle: 50, color: [1.0, 1.0, 1.0] },
     { enabled: true, azimuth: 170, elevation: 10, intensity: 0.35, angle: 6, color: [1.0, 1.0, 1.0] }
   ],
@@ -860,11 +887,11 @@ function updateRepresentationControlsFromSelection() {
     }
     updateDisplayControlsVisibility();
     if (representationSelectionHint) {
-      representationSelectionHint.textContent = "Select an object or representation in Scene Graph.";
+      representationSelectionHint.textContent = "Select an object or style in Project.";
     }
     if (representationActionBtn) {
       representationActionBtn.disabled = true;
-      representationActionBtn.textContent = "Add representation";
+      representationActionBtn.textContent = "Add Style";
     }
     return;
   }
@@ -877,7 +904,7 @@ function updateRepresentationControlsFromSelection() {
     }
     if (representationActionBtn) {
       representationActionBtn.disabled = false;
-      representationActionBtn.textContent = "Modify representation";
+      representationActionBtn.textContent = "Update Style";
     }
     applyRepresentationToControls(selectedRep.representation, selectedObject.type);
   } else {
@@ -886,7 +913,7 @@ function updateRepresentationControlsFromSelection() {
     }
     if (representationActionBtn) {
       representationActionBtn.disabled = false;
-      representationActionBtn.textContent = "Add representation";
+      representationActionBtn.textContent = "Add Style";
     }
     updateDisplayControlsVisibility();
   }
@@ -896,6 +923,7 @@ function createSceneGraphRow(label, checked, selected, options = {}) {
   const className = options.className || "";
   const collapsible = Boolean(options.collapsible);
   const expanded = options.expanded !== false;
+  const deletable = Boolean(options.deletable);
   const row = document.createElement("div");
   row.className = `scene-graph-row ${className}`.trim();
   if (selected) {
@@ -942,7 +970,18 @@ function createSceneGraphRow(label, checked, selected, options = {}) {
 
   row.appendChild(labelEl);
 
-  return { row, checkbox, toggle };
+  let deleteButton = null;
+  if (deletable) {
+    deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "scene-graph-delete";
+    deleteButton.title = "Delete";
+    deleteButton.setAttribute("aria-label", "Delete");
+    deleteButton.textContent = "🗑";
+    row.appendChild(deleteButton);
+  }
+
+  return { row, checkbox, toggle, deleteButton };
 }
 
 async function rebuildSceneFromSceneGraph(options = {}) {
@@ -1122,10 +1161,11 @@ function renderSceneGraphTree() {
     const group = document.createElement("div");
     group.className = "scene-graph-group";
     const objectSelected = sceneGraph.selection?.kind === "object" && sceneGraph.selection.objectId === object.id;
-    const { row, checkbox, toggle } = createSceneGraphRow(object.label, object.visible, objectSelected, {
+    const { row, checkbox, toggle, deleteButton } = createSceneGraphRow(object.label, object.visible, objectSelected, {
       className: "object",
       collapsible: true,
-      expanded: object.expanded
+      expanded: object.expanded,
+      deletable: true
     });
 
     checkbox.addEventListener("click", (event) => event.stopPropagation());
@@ -1142,6 +1182,15 @@ function renderSceneGraphTree() {
       selectObject(sceneGraph, object.id);
       renderSceneGraphTree();
     });
+    deleteButton?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const removed = deleteObjectFromSceneGraph(sceneGraph, object.id);
+      for (const rep of removed.representations || []) {
+        repGeometryCache.delete(rep.id);
+      }
+      rebuildSceneFromSceneGraph().then(() => startRenderLoop()).catch((err) => logger.error(err.message || String(err)));
+      renderSceneGraphTree();
+    });
     group.appendChild(row);
 
     const children = document.createElement("div");
@@ -1155,7 +1204,8 @@ function renderSceneGraphTree() {
         && sceneGraph.selection.representationId === representation.id
       );
       const repRow = createSceneGraphRow(representation.name, representation.visible, repSelected, {
-        className: "rep"
+        className: "rep",
+        deletable: true
       });
       repRow.checkbox.addEventListener("click", (event) => event.stopPropagation());
       repRow.checkbox.addEventListener("change", () => {
@@ -1164,6 +1214,13 @@ function renderSceneGraphTree() {
       });
       repRow.row.addEventListener("click", () => {
         selectRepresentation(sceneGraph, object.id, representation.id);
+        renderSceneGraphTree();
+      });
+      repRow.deleteButton?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const removed = deleteRepresentationFromObject(sceneGraph, object.id, representation.id);
+        repGeometryCache.delete(removed.id);
+        rebuildSceneFromSceneGraph().then(() => startRenderLoop()).catch((err) => logger.error(err.message || String(err)));
         renderSceneGraphTree();
       });
       children.appendChild(repRow.row);
@@ -1254,12 +1311,12 @@ async function importMolecularFiles(files, options = {}) {
 
   for (const item of parsedImports) {
     appendParsedImportToSceneGraph(item.parsed);
-    logger.info(`Imported ${item.fileName} and appended to Scene Graph.`);
+    logger.info(`Imported ${item.fileName} and appended to Project.`);
   }
 
   renderSceneGraphTree();
   await rebuildSceneFromSceneGraph({ fitCamera: shouldFitCamera });
-  logger.info(`Import complete. Added ${parsedImports.length} file(s) to Scene Graph.`);
+  logger.info(`Import complete. Added ${parsedImports.length} file(s) to Project.`);
 }
 
 async function loadMolecularFile(text, filename) {
@@ -1411,6 +1468,17 @@ function resetAccumulation(reason) {
   }
 }
 
+function updateRenderModeUi() {
+  const mode = renderModeController.getMode();
+  renderModePathtracingBtn?.classList.toggle("active", mode === RENDER_MODES.PATHTRACING);
+  renderModePreviewBtn?.classList.toggle("active", mode === RENDER_MODES.PREVIEW);
+  if (hiresRenderBtn) {
+    const isPreview = renderModeController.isPreview();
+    hiresRenderBtn.disabled = isPreview;
+    hiresRenderBtn.title = isPreview ? "Hi-res export is available in Pathtracing mode." : "";
+  }
+}
+
 function updateMaterialState() {
   renderState.maxBounces = clamp(Number(maxBouncesInput.value), 0, 6);
   renderState.exposure = clamp(Number(exposureInput.value), 0, 5);
@@ -1436,6 +1504,17 @@ function updateMaterialState() {
   renderState.castShadows = shadowToggle.checked;
   renderState.toneMap = toneMapSelect?.value || "reinhard";
   resetAccumulation("Render settings updated.");
+}
+
+function updatePreviewQualityState() {
+  renderState.previewShadows = previewShadowsToggle?.checked ?? true;
+  renderState.previewSsao = previewSsaoToggle?.checked ?? false;
+  renderState.previewSsr = previewSsrToggle?.checked ?? false;
+  renderState.previewSsaoRadiusPx = clamp(Number(previewSsaoRadiusInput?.value ?? 3.0), 1.0, 12.0);
+  renderState.previewSsaoDepthStrength = clamp(Number(previewSsaoDepthStrengthInput?.value ?? 0.2), 0.0, 1.0);
+  renderState.previewSsaoEdgeStrength = clamp(Number(previewSsaoEdgeStrengthInput?.value ?? 0.25), 0.0, 1.0);
+  renderState.previewLightIntensity = clamp(Number(previewLightIntensityInput?.value ?? 1.0), 0.0, 2.0);
+  resetAccumulation("Preview quality updated.");
 }
 
 function updateVolumeState() {
@@ -1586,7 +1665,7 @@ function updateClipState({ preserveLock = false } = {}) {
     renderState.clipLockedSide = null;
   }
   renderState.clipLocked = lock;
-  resetAccumulation("Slice plane updated.");
+  resetAccumulation("Clipping plane updated.");
 }
 
 const environmentController = createEnvironmentController({
@@ -1963,9 +2042,28 @@ function hideHoverBoxOverlay() {
   hoverBoxOverlay.style.display = "none";
 }
 
-function drawHoverInfoOverlay(label) {
+const HOVER_KEY_HINTS = Object.freeze([
+  "F: focus",
+  "C: center",
+  "1/2/3: PCA align"
+]);
+
+function drawHoverInfoOverlay(label, hints = HOVER_KEY_HINTS) {
   if (!hoverInfoOverlay || !label) return;
-  hoverInfoOverlay.textContent = label;
+  hoverInfoOverlay.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "hover-info-title";
+  title.textContent = label;
+  hoverInfoOverlay.appendChild(title);
+
+  if (Array.isArray(hints) && hints.length > 0) {
+    const hintLine = document.createElement("div");
+    hintLine.className = "hover-info-hints";
+    hintLine.textContent = hints.join("   ");
+    hoverInfoOverlay.appendChild(hintLine);
+  }
+
   hoverInfoOverlay.style.display = "block";
 }
 
@@ -2392,6 +2490,17 @@ function ensureWebGL() {
   return glState;
 }
 
+function ensurePreviewBackend() {
+  const { gl } = ensureWebGL();
+  if (!previewState || previewState.gl !== gl) {
+    if (previewState) {
+      disposePreviewBackend(previewState);
+    }
+    previewState = createPreviewBackend(gl, logger);
+  }
+  return previewState;
+}
+
 function uploadSceneTextures(gl, maxTextureSize) {
   if (!Array.isArray(sceneData.materials) || sceneData.materials.length === 0) {
     throw new Error("Scene material table is missing.");
@@ -2474,7 +2583,186 @@ function uploadSceneTextures(gl, maxTextureSize) {
   };
 }
 
+function buildPreviewVolumeState(gl) {
+  const volumetricDisplay = sceneData?.volumeDisplay || null;
+  const hasVolumetricRepresentation = Boolean(
+    sceneData?.volume
+    && volumetricDisplay
+    && volumetricDisplay.style === "volumetric"
+  );
+
+  let volumeEnabled = hasVolumetricRepresentation ? 1 : (renderState.volumeEnabled ? 1 : 0);
+  let volumeMin = [0, 0, 0];
+  let volumeMax = [0, 0, 0];
+  let volumeInvSize = [0, 0, 0];
+  let volumeMaxValue = 1.0;
+  let volumeThreshold = renderState.volumeThreshold;
+  let volumeValueMax = 1.0;
+  let volumeOpacity = renderState.volumeOpacity;
+  let volumeStep = renderState.volumeStep;
+  let volumeTransferPreset = 0;
+  let volumePositiveColor = [0.15, 0.85, 0.2];
+  let volumeNegativeColor = [0.9, 0.2, 0.2];
+  let volumeDensity = renderState.volumeDensity;
+
+  if (hasVolumetricRepresentation) {
+    const volMinNorm = clamp(Number(volumetricDisplay.volumeValueMin ?? 0.0), 0.0, 0.99);
+    const volMaxNorm = clamp(Number(volumetricDisplay.volumeValueMax ?? 1.0), 0.01, 1.0);
+    if (volMaxNorm <= volMinNorm) {
+      throw new Error("Volume value window max must be greater than min.");
+    }
+    const vol = sceneData.volume;
+    const volAbsMax = Number(vol?.absMax ?? vol?.maxValue ?? 1.0);
+    const volMinAbs = Number(vol?.minAbsNonZero ?? 0);
+    const lower = Math.max(
+      (Number.isFinite(volMinAbs) && volMinAbs > 0) ? volMinAbs : volAbsMax * 1e-6,
+      volAbsMax * 1e-12, 1e-12
+    );
+    const upper = Math.max(volAbsMax, lower * (1 + 1e-9));
+    const logLower = Math.log(lower / upper);
+    volumeThreshold = Math.exp(logLower + volMinNorm * (0 - logLower));
+    volumeValueMax = Math.exp(logLower + volMaxNorm * (0 - logLower));
+    volumeOpacity = clamp(Number(volumetricDisplay.volumeOpacityScale ?? 1.0), 0.0, 20.0);
+    volumeStep = clamp(Number(volumetricDisplay.volumeStepSize ?? 0.5), 0.01, 5.0);
+    volumeTransferPreset = mapVolumeTransferPresetToUniform(volumetricDisplay.volumeTransferPreset);
+    if (volumetricDisplay.volumePositiveColor) volumePositiveColor = volumetricDisplay.volumePositiveColor;
+    if (volumetricDisplay.volumeNegativeColor) volumeNegativeColor = volumetricDisplay.volumeNegativeColor;
+    volumeDensity = 1.0;
+  }
+
+  if (!volumeEnabled) {
+    return { enabled: false };
+  }
+  if (!sceneData?.volume) {
+    throw new Error("Volume rendering enabled but no volume data is available.");
+  }
+
+  const volume = sceneData.volume;
+  const [nx, ny, nz] = volume.dims;
+  if (!glState.volumeTex || glState.volumeVersion !== volume.version) {
+    if (glState.volumeTex && glState.volumeTex !== glState.dummyVolumeTex) {
+      gl.deleteTexture(glState.volumeTex);
+    }
+    logger.info(`Uploading volume texture (${nx}x${ny}x${nz})`);
+    glState.volumeTex = createVolumeTexture(gl, nx, ny, nz, volume.data);
+    glState.volumeVersion = volume.version;
+  }
+  volumeMin = [volume.bounds.minX, volume.bounds.minY, volume.bounds.minZ];
+  volumeMax = [volume.bounds.maxX, volume.bounds.maxY, volume.bounds.maxZ];
+  const sizeX = volumeMax[0] - volumeMin[0];
+  const sizeY = volumeMax[1] - volumeMin[1];
+  const sizeZ = volumeMax[2] - volumeMin[2];
+  volumeInvSize = [
+    sizeX > 0 ? 1 / sizeX : 0,
+    sizeY > 0 ? 1 / sizeY : 0,
+    sizeZ > 0 ? 1 / sizeZ : 0
+  ];
+  volumeMaxValue = Number(volume.absMax ?? volume.maxValue ?? 1.0);
+
+  const technique = choosePreviewVolumeTechnique(renderState.cameraDirty);
+  return {
+    enabled: true,
+    texture: glState.volumeTex || glState.dummyVolumeTex,
+    min: volumeMin,
+    max: volumeMax,
+    invSize: volumeInvSize,
+    maxValue: volumeMaxValue,
+    threshold: volumeThreshold,
+    valueMax: volumeValueMax,
+    opacity: volumeOpacity,
+    step: volumeStep,
+    density: volumeDensity,
+    maxSteps: Math.max(16, Math.min(2048, renderState.volumeMaxSteps)),
+    transferPreset: volumeTransferPreset,
+    positiveColor: volumePositiveColor,
+    negativeColor: volumeNegativeColor,
+    toneMap: renderState.toneMap,
+    technique,
+    sliceCount: technique === 1 ? 48 : 96
+  };
+}
+
+function renderPreviewFrameInternal() {
+  if (renderState.hiresMode) {
+    throw new Error("Hi-res render is only supported in Pathtracing mode.");
+  }
+  if (!sceneData) {
+    logger.warn("No scene loaded yet.");
+    return;
+  }
+
+  const displayWidth = Math.max(1, Math.floor(canvas.clientWidth));
+  const displayHeight = Math.max(1, Math.floor(canvas.clientHeight));
+  if (displayWidth <= 1 || displayHeight <= 1) {
+    logger.warn(`Canvas size is too small: ${displayWidth}x${displayHeight}`);
+    return;
+  }
+
+  canvas.width = displayWidth;
+  canvas.height = displayHeight;
+  cameraState.width = displayWidth;
+  cameraState.height = displayHeight;
+
+  const backend = ensurePreviewBackend();
+  const { gl } = ensureWebGL();
+  if (renderState.envData && glState.envCacheKey !== renderState.envCacheKey) {
+    uploadEnvironmentToGl(renderState.envData);
+  }
+  const volumeState = buildPreviewVolumeState(gl);
+  const camera = computeCameraVectors();
+  const forwardLen = Math.hypot(camera.forward[0], camera.forward[1], camera.forward[2]) || 1;
+  const rightLen = Math.hypot(camera.right[0], camera.right[1], camera.right[2]) || 1;
+  const upLen = Math.hypot(camera.up[0], camera.up[1], camera.up[2]) || 1;
+  const camForward = [camera.forward[0] / forwardLen, camera.forward[1] / forwardLen, camera.forward[2] / forwardLen];
+  const camRight = [camera.right[0] / rightLen, camera.right[1] / rightLen, camera.right[2] / rightLen];
+  const camUp = [camera.up[0] / upLen, camera.up[1] / upLen, camera.up[2] / upLen];
+  const lightDirs = renderState.lights.map((light) =>
+    cameraRelativeLightDir(light.azimuth, light.elevation, camForward, camRight, camUp)
+  );
+  const clip = getActiveClipPlane(camera);
+
+  renderPreviewFrame(backend, {
+    sceneData,
+    camera,
+    renderState,
+    clip,
+    lightDirs,
+    displayWidth,
+    displayHeight,
+    cameraFov: cameraState.fov,
+    envTexture: glState.envTex || glState.blackEnvTex,
+    envSize: glState.envSize || [1, 1],
+    hasEnvironment: Boolean(renderState.envUrl && glState.envTex),
+    volumeState,
+    previewQuality: {
+      shadows: renderState.previewShadows,
+      ssao: renderState.previewSsao,
+      ssr: renderState.previewSsr,
+      ssaoRadiusPx: renderState.previewSsaoRadiusPx,
+      ssaoDepthStrength: renderState.previewSsaoDepthStrength,
+      ssaoEdgeStrength: renderState.previewSsaoEdgeStrength,
+      lightIntensityScale: renderState.previewLightIntensity
+    },
+    logger
+  });
+
+  renderState.frameIndex = 0;
+  renderState.cameraDirty = false;
+
+  if (renderOverlay) {
+    const polyCount = sceneData.triCount || 0;
+    const primCount = (sceneData.sphereCount || 0) + (sceneData.cylinderCount || 0);
+    renderOverlay.textContent = `Preview (Raster) ${formatPolyCount(polyCount)} plys, ${formatPolyCount(primCount)} prims`;
+    renderOverlay.style.display = "block";
+  }
+  safeUpdateHoverBoxOverlay(camera);
+}
+
 function renderFrame() {
+  if (renderModeController.isPreview()) {
+    renderPreviewFrameInternal();
+    return;
+  }
   if (!sceneData) {
     logger.warn("No scene loaded yet.");
     return;
@@ -2806,7 +3094,12 @@ async function startRenderLoop() {
       renderState.cameraDirty = true;
       markInteractionActive(time);
     }
-    if (renderState.maxFrames > 0 && renderState.frameIndex >= renderState.maxFrames && !renderState.cameraDirty) {
+    if (
+      !renderModeController.isPreview()
+      && renderState.maxFrames > 0
+      && renderState.frameIndex >= renderState.maxFrames
+      && !renderState.cameraDirty
+    ) {
       requestAnimationFrame(loop);
       return;
     }
@@ -2835,6 +3128,9 @@ function stopRenderLoop() {
 }
 
 async function hiresRender() {
+  if (renderModeController.isPreview()) {
+    throw new Error("Switch to Pathtracing mode for hi-res rendering.");
+  }
   const width = Math.max(64, Math.min(8192, Number(hiresWidthInput.value) || 1920));
   const height = Math.max(64, Math.min(8192, Number(hiresHeightInput.value) || 1080));
   const iterations = Math.max(1, Math.min(10000, Number(hiresIterationsInput.value) || 100));
@@ -2992,6 +3288,8 @@ let hiresAspect = 16 / 9;
 
 if (hiresRenderBtn) {
   hiresRenderBtn.onclick = () => {
+    // Pause interactive rendering as soon as the modal is shown.
+    stopRenderLoop();
     // Compute aspect ratio from current canvas
     const cw = canvas.clientWidth || 1920;
     const ch = canvas.clientHeight || 1080;
@@ -3031,6 +3329,7 @@ if (hiresStartBtn) {
 if (hiresCloseBtn) {
   hiresCloseBtn.onclick = () => {
     hiresModal.style.display = "none";
+    startRenderLoop().catch((err) => logger.error(err.message || String(err)));
   };
 }
 
@@ -3171,6 +3470,7 @@ loadPdbIdBtn.addEventListener("click", async () => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
+  focusRenderCanvas();
   updatePointerFromMouseEvent(event);
   safeUpdateHoverBoxOverlay();
   inputState.dragging = true;
@@ -3187,6 +3487,21 @@ canvas.addEventListener("mousedown", (event) => {
     inputState.dragMode = "rotate";
   }
   markInteractionActive();
+});
+
+function focusRenderCanvas() {
+  if (!canvas || document.activeElement === canvas) return;
+  try {
+    canvas.focus({ preventScroll: true });
+  } catch (_err) {
+    canvas.focus();
+  }
+}
+
+canvas.addEventListener("mouseenter", (event) => {
+  updatePointerFromMouseEvent(event);
+  focusRenderCanvas();
+  safeUpdateHoverBoxOverlay();
 });
 
 canvas.addEventListener("mouseup", () => {
@@ -3408,6 +3723,24 @@ tabButtons.forEach((button) => {
   });
 });
 
+renderModePathtracingBtn?.addEventListener("click", () => {
+  const changed = renderModeController.setMode(RENDER_MODES.PATHTRACING);
+  if (changed) {
+    logger.info("Render mode switched to Pathtracing.");
+    resetAccumulation();
+  }
+  updateRenderModeUi();
+});
+
+renderModePreviewBtn?.addEventListener("click", () => {
+  const changed = renderModeController.setMode(RENDER_MODES.PREVIEW);
+  if (changed) {
+    logger.info("Render mode switched to Preview.");
+    resetAccumulation();
+  }
+  updateRenderModeUi();
+});
+
 clipEnableToggle?.addEventListener("change", () => updateClipState({ preserveLock: true }));
 clipDistanceInput?.addEventListener("input", () => updateClipState({ preserveLock: true }));
 clipLockToggle?.addEventListener("change", () => updateClipState({ preserveLock: false }));
@@ -3433,6 +3766,13 @@ ambientColorInput.addEventListener("input", updateMaterialState);
 samplesPerBounceInput.addEventListener("input", updateMaterialState);
 maxFramesInput?.addEventListener("input", updateRenderLimits);
 shadowToggle.addEventListener("change", updateMaterialState);
+previewShadowsToggle?.addEventListener("change", updatePreviewQualityState);
+previewSsaoToggle?.addEventListener("change", updatePreviewQualityState);
+previewSsaoRadiusInput?.addEventListener("input", updatePreviewQualityState);
+previewSsaoDepthStrengthInput?.addEventListener("input", updatePreviewQualityState);
+previewSsaoEdgeStrengthInput?.addEventListener("input", updatePreviewQualityState);
+previewSsrToggle?.addEventListener("change", updatePreviewQualityState);
+previewLightIntensityInput?.addEventListener("input", updatePreviewQualityState);
 
 volumeEnableToggle?.addEventListener("change", () => {
   try {
@@ -3522,6 +3862,7 @@ loadEnvManifest().then(() => {
   }
 
   updateMaterialState();
+  updateRenderModeUi();
   updateMaterialVisibility();
   updateDisplayControlsVisibility();
   updateDofVisibility();

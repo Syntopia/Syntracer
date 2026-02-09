@@ -1321,6 +1321,7 @@ vec3 shadeDirect(
       continue;
     }
     float angle = clamp(radians(uLightAngle[i]), 0.001, PI);
+    float coneSolidAngle = max(2.0 * PI * (1.0 - cos(angle)), 1e-6);
     float lightPdf;
     vec3 lightDir = sampleConeDirection(normalize(-uLightDir[i]), angle, seed, lightPdf);
     float NdotL = max(dot(shadingNormal, lightDir), 0.0);
@@ -1353,7 +1354,9 @@ vec3 shadeDirect(
     float brdfPdfVal = brdfPdf(shadingNormal, V, lightDir, rough, specProb);
     float misWeight = powerHeuristic(lightPdf, brdfPdfVal);
 
-    vec3 radiance = uLightColor[i] * uLightIntensity[i];
+    // Keep perceived light strength stable when changing cone extent:
+    // treat uLightIntensity as total power over the cone and convert to radiance.
+    vec3 radiance = uLightColor[i] * (uLightIntensity[i] / coneSolidAngle);
     vec3 contrib = brdf * radiance * NdotL * misWeight / max(lightPdf, 1e-6);
     direct += contrib;
   }

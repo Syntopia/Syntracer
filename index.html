@@ -48,12 +48,38 @@
       .sidebar-header {
         padding: 10px 16px;
         border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
       }
       .sidebar-header h1 {
         margin: 0;
         font-size: 15px;
         font-weight: 600;
         letter-spacing: -0.02em;
+      }
+      .mode-toggle-group {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .mode-toggle-button {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--fg);
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: var(--radius-sm);
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .mode-toggle-button:hover {
+        background: #313137;
+      }
+      .mode-toggle-button.active {
+        border-color: #1d9d52;
+        background: #1f7a45;
+        color: #eafff2;
       }
       .sidebar-content {
         flex: 1;
@@ -258,6 +284,27 @@
         line-height: 1;
         white-space: nowrap;
         opacity: 0.7;
+      }
+      .scene-graph-delete {
+        border: none;
+        background: transparent;
+        color: var(--fg-muted);
+        width: 18px;
+        height: 18px;
+        border-radius: 3px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        line-height: 1;
+        transform: translateY(-1px);
+        padding: 0;
+        flex-shrink: 0;
+      }
+      .scene-graph-delete:hover {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.12);
       }
       .representation-actions {
         display: flex;
@@ -609,8 +656,20 @@
         font-family: "SF Mono", Monaco, monospace;
         pointer-events: none;
         display: none;
-        white-space: nowrap;
+        white-space: normal;
         z-index: 6;
+      }
+      .hover-info-title {
+        color: #e5e7eb;
+        font-family: "SF Mono", Monaco, monospace;
+        line-height: 1.2;
+      }
+      .hover-info-hints {
+        margin-top: 4px;
+        color: #93c5fd;
+        font-family: "Segoe UI", Roboto, Arial, sans-serif;
+        font-size: 11px;
+        line-height: 1.2;
       }
 
       /* Inline flex row */
@@ -705,11 +764,15 @@
       <aside class="sidebar">
         <div class="sidebar-header">
           <h1>Syntracer</h1>
+          <div class="mode-toggle-group" role="group" aria-label="Render mode">
+            <button id="renderModePathtracing" class="mode-toggle-button" type="button">Pathtracing</button>
+            <button id="renderModePreview" class="mode-toggle-button" type="button">Preview (Raster)</button>
+          </div>
         </div>
 
         <div class="sidebar-content">
           <div class="form-section">
-            <div class="form-section-title">Scene Graph</div>
+            <div class="form-section-title">Project</div>
             <div id="sceneGraphTree" class="scene-graph-tree"></div>
           </div>
 
@@ -767,7 +830,7 @@
           <!-- RENDER TAB -->
           <div class="tab-panel" data-tab-panel="render">
             <div class="form-section">
-              <button id="hiresRenderBtn" type="button">Render Image...</button>
+              <button id="hiresRenderBtn" type="button">Render High-Res Image...</button>
             </div>
 
             <div class="form-section-flat">
@@ -946,7 +1009,7 @@
 
             <div class="form-section-flat">
               <details class="collapsible">
-                <summary>Quality</summary>
+                <summary>Quality (Pathtracing)</summary>
                 <div class="collapsible-body">
 
               <label for="scaleSelect">Render scale</label>
@@ -1016,6 +1079,74 @@
 
             <div class="form-section-flat">
               <details class="collapsible">
+                <summary>Quality (Preview)</summary>
+                <div class="collapsible-body">
+                  <div class="checkbox-group">
+                    <input id="previewShadowsToggle" type="checkbox" checked />
+                    <label for="previewShadowsToggle">Preview shadows</label>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <div class="checkbox-group">
+                    <input id="previewSsaoToggle" type="checkbox" checked />
+                    <label for="previewSsaoToggle">SSAO / contact shadows</label>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="previewSsaoRadius">SSAO radius (px)</label>
+                  <div class="slider-input">
+                    <input id="previewSsaoRadius" type="range" min="1.0" max="12.0" step="0.5" value="3.0" />
+                    <input type="text" class="value-input" data-for="previewSsaoRadius" value="3.0" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoRadius">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoRadius">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="previewSsaoDepthStrength">SSAO depth strength</label>
+                  <div class="slider-input">
+                    <input id="previewSsaoDepthStrength" type="range" min="0.0" max="1.0" step="0.01" value="0.20" />
+                    <input type="text" class="value-input" data-for="previewSsaoDepthStrength" value="0.20" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoDepthStrength">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoDepthStrength">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="previewSsaoEdgeStrength">SSAO edge strength</label>
+                  <div class="slider-input">
+                    <input id="previewSsaoEdgeStrength" type="range" min="0.0" max="1.0" step="0.01" value="0.25" />
+                    <input type="text" class="value-input" data-for="previewSsaoEdgeStrength" value="0.25" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoEdgeStrength">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoEdgeStrength">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <div class="checkbox-group">
+                    <input id="previewSsrToggle" type="checkbox" checked />
+                    <label for="previewSsrToggle">Screen-Space Reflections (SSR)</label>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="previewLightIntensity">Scene light scale</label>
+                  <div class="slider-input">
+                    <input id="previewLightIntensity" type="range" min="0.0" max="2.0" step="0.05" value="1.0" />
+                    <input type="text" class="value-input" data-for="previewLightIntensity" value="1.00" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="previewLightIntensity">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="previewLightIntensity">◀</button>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="form-section-flat">
+              <details class="collapsible">
                 <summary>Effects</summary>
                 <div class="collapsible-body">
 
@@ -1061,14 +1192,14 @@
 
             <div class="form-section-flat">
               <details class="collapsible">
-                <summary>Slices</summary>
+                <summary>Clipping Planes</summary>
                 <div class="collapsible-body">
               <div class="checkbox-group">
                 <input id="clipEnable" type="checkbox" />
-                <label for="clipEnable">Enable slice plane</label>
+                <label for="clipEnable">Enable clipping plane</label>
               </div>
 
-              <label for="clipDistance">Slice distance (Å)</label>
+              <label for="clipDistance">Clipping distance (Å)</label>
               <div class="slider-input">
                 <input id="clipDistance" type="range" min="0" max="100" step="0.1" value="0" />
                 <input type="text" class="value-input" data-for="clipDistance" value="0.0" />
@@ -1153,8 +1284,8 @@
                   <div style="height: 8px"></div>
                   <label for="light1Extent">Extent angle (degrees)</label>
                   <div class="slider-input">
-                    <input id="light1Extent" type="range" min="0" max="60" step="1" value="22" />
-                    <input type="text" class="value-input" data-for="light1Extent" value="22" />
+                    <input id="light1Extent" type="range" min="0" max="60" step="1" value="5" />
+                    <input type="text" class="value-input" data-for="light1Extent" value="5" />
                     <div class="step-buttons">
                       <button type="button" class="step-btn" data-action="up" data-for="light1Extent">▶</button>
                       <button type="button" class="step-btn" data-action="down" data-for="light1Extent">◀</button>
@@ -1241,11 +1372,11 @@
           <!-- REPRESENTATION TAB -->
           <div class="tab-panel" data-tab-panel="representation">
             <div class="form-section">
-              <div class="form-section-title">Representation</div>
-              <div id="representationSelectionHint" class="selection-hint">Select an object or representation in Scene Graph.</div>
               <div class="representation-actions">
-                <button id="representationActionBtn" type="button">Add representation</button>
+                <button id="representationActionBtn" type="button">Add Style</button>
               </div>
+              <div class="form-section-title">Representation</div>
+              <div id="representationSelectionHint" class="selection-hint">Select an object or style in Project.</div>
 
               <div style="height: 10px"></div>
               <label for="pdbDisplayStyle">Molecular display</label>
@@ -1429,7 +1560,7 @@
                 </div>
 
                 <div style="height: 8px"></div>
-                <label for="rimBoost">Rim boost (metallic)</label>
+                <label for="rimBoost">Rim boost</label>
                 <div class="slider-input">
                   <input id="rimBoost" type="range" min="0" max="1" step="0.01" value="0.2" />
                   <input type="text" class="value-input" data-for="rimBoost" value="0.20" />
@@ -1537,7 +1668,7 @@
       </aside>
 
       <main class="canvas-container">
-        <canvas id="view"></canvas>
+        <canvas id="view" tabindex="0" aria-label="Render viewport"></canvas>
         <div class="hover-box-overlay" id="hoverBoxOverlay"></div>
         <div class="hover-info-overlay" id="hoverInfoOverlay"></div>
         <div class="render-overlay" id="renderOverlay"></div>
@@ -1547,7 +1678,7 @@
 
     <div id="hiresModal" class="modal-overlay" style="display:none">
       <div class="modal-content">
-        <div class="modal-title">Render Image</div>
+        <div class="modal-title">Render High-Res Image</div>
         <div class="hires-form" id="hiresForm">
           <label>Width <input id="hiresWidth" type="number" min="64" max="8192" value="1920"></label>
           <label>Height <input id="hiresHeight" type="number" min="64" max="8192" value="1080"></label>
