@@ -114,6 +114,7 @@ uniform int uCastShadows;
 uniform float uRayBias;
 uniform float uTMin;
 uniform float uEnvIntensity;
+uniform float uEnvBgIntensity;
 uniform int uUseEnv;
 uniform float uEnvMaxLuminance;
 uniform float uEnvRotationYawRad;
@@ -320,7 +321,7 @@ vec3 worldToEnvDirection(vec3 worldDir) {
   return normalize(outDir);
 }
 
-vec3 sampleEnv(vec3 dir) {
+vec3 sampleEnv(vec3 dir, float intensity) {
   if (uUseEnv == 0) {
     return vec3(0.0);
   }
@@ -328,7 +329,7 @@ vec3 sampleEnv(vec3 dir) {
   float u = atan(d.z, d.x) / (2.0 * PI) + 0.5;
   u = fract(u);
   float v = acos(clamp(d.y, -1.0, 1.0)) / PI;
-  vec3 color = texture(uEnvTex, vec2(u, v)).rgb * uEnvIntensity;
+  vec3 color = texture(uEnvTex, vec2(u, v)).rgb * intensity;
 
   // Soft clamp to reduce fireflies from extremely bright light sources
   // Compresses luminance above threshold while preserving color ratios
@@ -1449,7 +1450,8 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
     }
 
     if (!hit) {
-      vec3 envContrib = uAmbientColor * uAmbientIntensity + sampleEnv(dir);
+      float envI = (bounce == 0) ? uEnvBgIntensity : uEnvIntensity;
+      vec3 envContrib = uAmbientColor * uAmbientIntensity + sampleEnv(dir, envI);
       // Apply MIS weight for environment hit via BRDF sampling
       if (bounce > 0 && uUseEnv == 1 && lastBrdfPdf > 0.0) {
         float envPdfVal = envPdf(dir);
@@ -1611,7 +1613,7 @@ vec3 tracePath(vec3 origin, vec3 dir, inout uint seed) {
           vec3 brdf = specBrdf + diffBrdf * (vec3(1.0) - F);
 
           // Get environment radiance
-          vec3 envRadiance = sampleEnv(envDir);
+          vec3 envRadiance = sampleEnv(envDir, uEnvIntensity);
 
           // Compute BRDF PDF for MIS
           float specWeight = maxComponent(F0);
@@ -2115,6 +2117,7 @@ export function setTraceUniforms(gl, program, uniforms) {
   gl.uniform1f(gl.getUniformLocation(program, "uRayBias"), uniforms.rayBias);
   gl.uniform1f(gl.getUniformLocation(program, "uTMin"), uniforms.tMin);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvIntensity"), uniforms.envIntensity);
+  gl.uniform1f(gl.getUniformLocation(program, "uEnvBgIntensity"), uniforms.envBgIntensity ?? uniforms.envIntensity);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvMaxLuminance"), uniforms.envMaxLuminance ?? 50.0);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvRotationYawRad"), uniforms.envRotationYawRad ?? 0.0);
   gl.uniform1f(gl.getUniformLocation(program, "uEnvRotationPitchRad"), uniforms.envRotationPitchRad ?? 0.0);

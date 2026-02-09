@@ -14,6 +14,7 @@ export function createEnvironmentController(deps) {
   const {
     envSelect,
     envIntensityInput,
+    envBgIntensityInput,
     envUniformColorInput,
     envRotationInput,
     envRotationVerticalInput,
@@ -214,6 +215,7 @@ export function createEnvironmentController(deps) {
   async function updateEnvironmentState() {
     setLoadingOverlay(true, "Loading environment...");
     renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 1.0);
+    renderState.envBgIntensity = clamp(Number(envBgIntensityInput?.value ?? 1.0), 0, 2.0);
     renderState.envRotationDeg = clamp(Number(envRotationInput?.value ?? 0), -180, 180);
     renderState.envRotationVerticalDeg = clamp(Number(envRotationVerticalInput?.value ?? 0), -180, 180);
     renderState.envMaxLuminance = clamp(Number(envMaxLumInput?.value ?? 50), 0, 500);

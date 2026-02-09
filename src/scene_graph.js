@@ -85,7 +85,7 @@ export function defaultDisplayForObjectType(objectType) {
       volumeNegativeColor: [0.9, 0.2, 0.2],
       volumeTransferPreset: "orbital",
       atomScale: 1.0,
-      bondRadius: 0.12,
+      bondRadius: 0.25,
       probeRadius: 1.4,
       surfaceResolution: 0.25,
       smoothNormals: false,
@@ -101,7 +101,7 @@ export function defaultDisplayForObjectType(objectType) {
   return {
     style,
     atomScale: 1.0,
-    bondRadius: 0.12,
+    bondRadius: 0.25,
     probeRadius: 1.4,
     surfaceResolution: 0.25,
     isoLevel: 0.77,

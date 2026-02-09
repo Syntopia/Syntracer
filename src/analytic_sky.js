@@ -343,7 +343,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   if (dir.y < 0.0) {
     let t = clamp(abs(dir.y) / max(params.horizon_softness, 1e-4), 0.0, 1.0);
-    let ga = params.ground_albedo * params.sky_intensity;
+    let ga = params.ground_albedo * params.sky_intensity * 10.0;
     let ground = vec3<f32>(ga * 0.55, ga * 0.78, ga * 0.35);
     rgb = mix(rgb * 0.05, ground, t);
   }

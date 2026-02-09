@@ -66,6 +66,7 @@ const exampleSelect = document.getElementById("exampleSelect");
 const loadExampleBtn = document.getElementById("loadExample");
 const envSelect = document.getElementById("envSelect");
 const envIntensityInput = document.getElementById("envIntensity");
+const envBgIntensityInput = document.getElementById("envBgIntensity");
 const envUniformColorInput = document.getElementById("uniformEnvColor");
 const envRotationInput = document.getElementById("envRotation");
 const envRotationVerticalInput = document.getElementById("envRotationVertical");
@@ -225,6 +226,7 @@ const renderState = {
   envUrl: null,
   envCacheKey: null,
   envIntensity: 0.1,
+  envBgIntensity: 0.3,
   envRotationDeg: 0.0,
   envRotationVerticalDeg: 0.0,
   envMaxLuminance: 200.0,
@@ -1426,6 +1428,7 @@ function updateMaterialState() {
   renderState.ambientIntensity = clamp(Number(ambientIntensityInput.value), 0, 2);
   renderState.ambientColor = hexToRgb(ambientColorInput.value);
   renderState.envIntensity = clamp(Number(envIntensityInput.value), 0, 1.0);
+  renderState.envBgIntensity = clamp(Number(envBgIntensityInput?.value ?? 1.0), 0, 2.0);
   renderState.useBvh = true;
   renderState.rayBias = clamp(renderState.rayBias, 1e-7, 1);
   renderState.tMin = clamp(renderState.tMin, 1e-7, 1);
@@ -1589,6 +1592,7 @@ function updateClipState({ preserveLock = false } = {}) {
 const environmentController = createEnvironmentController({
   envSelect,
   envIntensityInput,
+  envBgIntensityInput,
   envUniformColorInput,
   envRotationInput,
   envRotationVerticalInput,
@@ -1674,7 +1678,8 @@ function applyCameraToBounds(bounds) {
   const distance = radius / Math.tan(cameraState.fov / 2) * 1.4;
   cameraState.target = [cx, cy, cz];
   cameraState.distance = distance;
-  cameraState.rotation = [0, 0, 0, 1];
+  // Pitch camera down ~15 degrees so we look slightly upward into the sky
+  cameraState.rotation = quatFromAxisAngle([1, 0, 0], -15 * Math.PI / 180);
   renderState.cameraDirty = true;
   renderState.frameIndex = 0;
   logger.info(
@@ -2708,6 +2713,7 @@ setTraceUniforms(gl, traceProgram, {
     ambientIntensity: renderState.ambientIntensity,
     ambientColor: renderState.ambientColor,
     envIntensity: renderState.envIntensity,
+    envBgIntensity: renderState.envBgIntensity,
     envRotationYawRad: (renderState.envRotationDeg * Math.PI) / 180.0,
     envRotationPitchRad: (renderState.envRotationVerticalDeg * Math.PI) / 180.0,
     envMaxLuminance: renderState.envMaxLuminance,
@@ -3351,6 +3357,9 @@ envSelect.addEventListener("change", () => {
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
 });
 envIntensityInput.addEventListener("input", () => {
+  updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
+});
+envBgIntensityInput?.addEventListener("input", () => {
   updateEnvironmentState().catch((err) => logger.error(err.message || String(err)));
 });
 envUniformColorInput?.addEventListener("input", () => {

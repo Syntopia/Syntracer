@@ -79,32 +79,35 @@
       /* Tabs */
       .tabs {
         display: flex;
-        gap: 2px;
-        padding: 12px 0;
+        gap: 0;
+        padding: 0;
         position: sticky;
         top: 0;
         background: var(--bg-secondary);
         z-index: 10;
+        border-bottom: 1px solid var(--border);
       }
       .tab-button {
         flex: 1;
-        padding: 8px 4px;
+        padding: 10px 4px 8px;
         border: none;
+        border-bottom: 2px solid transparent;
         background: transparent;
         color: var(--fg-muted);
         font-size: 12px;
         font-weight: 500;
         cursor: pointer;
-        border-radius: var(--radius-sm);
-        transition: all 0.15s ease;
+        border-radius: 0;
+        transition: color 0.15s ease, border-color 0.15s ease;
       }
       .tab-button:hover {
-        background: var(--panel);
         color: var(--fg);
+        background: transparent;
       }
       .tab-button.active {
-        background: var(--accent);
-        color: #fff;
+        color: var(--fg);
+        border-bottom-color: var(--accent);
+        background: transparent;
       }
       .tab-panel {
         display: none;
@@ -723,11 +726,6 @@
 
               <label for="exampleSelect">Select scene or molecule</label>
               <select id="exampleSelect">
-                <optgroup label="Test Primitives">
-                  <option value="__test_primitives__">Spheres + Cylinders</option>
-                  <option value="__test_1000_spheres__">1000 Random Spheres</option>
-                  <option value="__test_10000_spheres__">10000 Random Spheres</option>
-                </optgroup>
                 <optgroup label="Small Molecules (SDF)">
                   <option value="mol:caffeine">Caffeine</option>
                   <option value="mol:aspirin">Aspirin</option>
@@ -760,7 +758,7 @@
                   <label for="pdbIdInput">Fetch PDB by ID</label>
                   <input id="pdbIdInput" type="text" placeholder="e.g., 1CRN" />
                 </div>
-                <button id="loadPdbId" class="secondary">Fetch</button>
+                <button id="loadPdbId">Fetch</button>
               </div>
             </div>
 
@@ -818,7 +816,7 @@
                     <div style="height: 8px"></div>
                     <label for="analyticSkySunElevation">Sun elevation (deg)</label>
                     <div class="slider-input">
-                      <input id="analyticSkySunElevation" type="range" min="-10" max="90" step="1" value="35" />
+                      <input id="analyticSkySunElevation" type="range" min="0" max="90" step="1" value="35" />
                       <input type="text" class="value-input" data-for="analyticSkySunElevation" value="35" />
                       <div class="step-buttons">
                         <button type="button" class="step-btn" data-action="up" data-for="analyticSkySunElevation">▶</button>
@@ -889,13 +887,24 @@
                   </div>
 
                   <div style="height: 12px"></div>
-                  <label for="envIntensity">Environment intensity</label>
+                  <label for="envIntensity">Lighting intensity</label>
                   <div class="slider-input">
                     <input id="envIntensity" type="range" min="0" max="1.0" step="0.05" value="0.1" />
                     <input type="text" class="value-input" data-for="envIntensity" value="0.10" />
                     <div class="step-buttons">
                       <button type="button" class="step-btn" data-action="up" data-for="envIntensity">▶</button>
                       <button type="button" class="step-btn" data-action="down" data-for="envIntensity">◀</button>
+                    </div>
+                  </div>
+
+                  <div style="height: 8px"></div>
+                  <label for="envBgIntensity">Background brightness</label>
+                  <div class="slider-input">
+                    <input id="envBgIntensity" type="range" min="0" max="2.0" step="0.05" value="0.3" />
+                    <input type="text" class="value-input" data-for="envBgIntensity" value="0.30" />
+                    <div class="step-buttons">
+                      <button type="button" class="step-btn" data-action="up" data-for="envBgIntensity">▶</button>
+                      <button type="button" class="step-btn" data-action="down" data-for="envBgIntensity">◀</button>
                     </div>
                   </div>
 
@@ -1001,6 +1010,22 @@
                 </div>
               </div>
 
+                </div>
+              </details>
+            </div>
+
+            <div class="form-section-flat">
+              <details class="collapsible">
+                <summary>Effects</summary>
+                <div class="collapsible-body">
+
+              <label for="toneMapSelect">Tone mapping</label>
+              <select id="toneMapSelect">
+                <option value="reinhard">Reinhard</option>
+                <option value="aces" selected>Filmic (ACES)</option>
+                <option value="linear">Linear</option>
+              </select>
+
               <div style="height: 12px"></div>
               <div class="checkbox-group">
                 <input id="dofEnable" type="checkbox" />
@@ -1028,88 +1053,6 @@
                     <button type="button" class="step-btn" data-action="up" data-for="dofFocusDistance">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="dofFocusDistance">◀</button>
                   </div>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="toneMapSelect">Tone mapping</label>
-              <select id="toneMapSelect">
-                <option value="reinhard">Reinhard</option>
-                <option value="aces" selected>Filmic (ACES)</option>
-                <option value="linear">Linear</option>
-              </select>
-                </div>
-              </details>
-            </div>
-
-            <div class="form-section-flat">
-              <details class="collapsible">
-                <summary>Volume</summary>
-                <div class="collapsible-body">
-                  <div style="font-size: 11px; color: var(--fg-muted); margin-bottom: 8px;">
-                    Requires volume data from PDB import.
-                  </div>
-
-              <div class="checkbox-group">
-                <input id="volumeEnable" type="checkbox" />
-                <label for="volumeEnable">Enable volume</label>
-              </div>
-
-              <label for="volumeColor">Volume color</label>
-              <input id="volumeColor" type="color" value="#6fa4ff" />
-
-              <div style="height: 8px"></div>
-              <label for="volumeDensity">Density scale</label>
-              <div class="slider-input">
-                <input id="volumeDensity" type="range" min="0" max="5" step="0.05" value="1.0" />
-                <input type="text" class="value-input" data-for="volumeDensity" value="1.00" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeDensity">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeDensity">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="volumeOpacity">Opacity scale</label>
-              <div class="slider-input">
-                <input id="volumeOpacity" type="range" min="0" max="2" step="0.05" value="1.0" />
-                <input type="text" class="value-input" data-for="volumeOpacity" value="1.00" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeOpacity">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeOpacity">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="volumeStep">Ray step (Å)</label>
-              <div class="slider-input">
-                <input id="volumeStep" type="range" min="0.05" max="1.5" step="0.05" value="0.5" />
-                <input type="text" class="value-input" data-for="volumeStep" value="0.50" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeStep">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeStep">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="volumeMaxSteps">Max steps</label>
-              <div class="slider-input">
-                <input id="volumeMaxSteps" type="range" min="16" max="1024" step="16" value="256" />
-                <input type="text" class="value-input" data-for="volumeMaxSteps" value="256" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeMaxSteps">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeMaxSteps">◀</button>
-                </div>
-              </div>
-
-              <div style="height: 8px"></div>
-              <label for="volumeThreshold">Density threshold</label>
-              <div class="slider-input">
-                <input id="volumeThreshold" type="range" min="0" max="1" step="0.01" value="0.0" />
-                <input type="text" class="value-input" data-for="volumeThreshold" value="0.00" />
-                <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="volumeThreshold">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="volumeThreshold">◀</button>
                 </div>
               </div>
                 </div>
@@ -1333,20 +1276,12 @@
                 <div style="height: 8px"></div>
                 <label for="pdbBondRadius">Bond radius</label>
                 <div class="slider-input">
-                  <input id="pdbBondRadius" type="range" min="0.05" max="0.3" step="0.01" value="0.12" />
-                  <input type="text" class="value-input" data-for="pdbBondRadius" value="0.12" />
+                  <input id="pdbBondRadius" type="range" min="0.05" max="0.6" step="0.01" value="0.25" />
+                  <input type="text" class="value-input" data-for="pdbBondRadius" value="0.25" />
                   <div class="step-buttons">
                     <button type="button" class="step-btn" data-action="up" data-for="pdbBondRadius">▶</button>
                     <button type="button" class="step-btn" data-action="down" data-for="pdbBondRadius">◀</button>
                   </div>
-                </div>
-              </div>
-
-              <div class="display-cartoon-controls">
-                <div style="height: 8px"></div>
-                <div class="checkbox-group">
-                  <input id="showSheetHbonds" type="checkbox" />
-                  <label for="showSheetHbonds">Debug: show sheet H-bonds</label>
                 </div>
               </div>
 
