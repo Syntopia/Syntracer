@@ -621,6 +621,17 @@
         display: none;
         white-space: nowrap;
       }
+      .render-overlay-primary {
+        font-size: 12px;
+        color: #e5e7eb;
+        line-height: 1.2;
+      }
+      .render-overlay-fps {
+        margin-top: 2px;
+        font-size: 11px;
+        color: #93c5fd;
+        line-height: 1.2;
+      }
       .loading-overlay {
         position: absolute;
         top: 24px;
@@ -1088,45 +1099,6 @@
 
                   <div style="height: 8px"></div>
                   <div class="checkbox-group">
-                    <input id="previewSsaoToggle" type="checkbox" checked />
-                    <label for="previewSsaoToggle">SSAO / contact shadows</label>
-                  </div>
-
-                  <div style="height: 8px"></div>
-                  <label for="previewSsaoRadius">SSAO radius (px)</label>
-                  <div class="slider-input">
-                    <input id="previewSsaoRadius" type="range" min="1.0" max="12.0" step="0.5" value="3.0" />
-                    <input type="text" class="value-input" data-for="previewSsaoRadius" value="3.0" />
-                    <div class="step-buttons">
-                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoRadius">▶</button>
-                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoRadius">◀</button>
-                    </div>
-                  </div>
-
-                  <div style="height: 8px"></div>
-                  <label for="previewSsaoDepthStrength">SSAO depth strength</label>
-                  <div class="slider-input">
-                    <input id="previewSsaoDepthStrength" type="range" min="0.0" max="1.0" step="0.01" value="0.20" />
-                    <input type="text" class="value-input" data-for="previewSsaoDepthStrength" value="0.20" />
-                    <div class="step-buttons">
-                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoDepthStrength">▶</button>
-                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoDepthStrength">◀</button>
-                    </div>
-                  </div>
-
-                  <div style="height: 8px"></div>
-                  <label for="previewSsaoEdgeStrength">SSAO edge strength</label>
-                  <div class="slider-input">
-                    <input id="previewSsaoEdgeStrength" type="range" min="0.0" max="1.0" step="0.01" value="0.25" />
-                    <input type="text" class="value-input" data-for="previewSsaoEdgeStrength" value="0.25" />
-                    <div class="step-buttons">
-                      <button type="button" class="step-btn" data-action="up" data-for="previewSsaoEdgeStrength">▶</button>
-                      <button type="button" class="step-btn" data-action="down" data-for="previewSsaoEdgeStrength">◀</button>
-                    </div>
-                  </div>
-
-                  <div style="height: 8px"></div>
-                  <div class="checkbox-group">
                     <input id="previewSsrToggle" type="checkbox" checked />
                     <label for="previewSsrToggle">Screen-Space Reflections (SSR)</label>
                   </div>
@@ -1147,24 +1119,16 @@
 
             <div class="form-section-flat">
               <details class="collapsible">
-                <summary>Effects</summary>
+                <summary>Camera</summary>
                 <div class="collapsible-body">
 
-              <label for="toneMapSelect">Tone mapping</label>
-              <select id="toneMapSelect">
-                <option value="reinhard">Reinhard</option>
-                <option value="aces" selected>Filmic (ACES)</option>
-                <option value="linear">Linear</option>
-              </select>
-
-              <div style="height: 8px"></div>
-              <label for="edgeAccent">Edge accent</label>
+              <label for="cameraFov">Field of view (deg)</label>
               <div class="slider-input">
-                <input id="edgeAccent" type="range" min="0.0" max="1.0" step="0.01" value="0.00" />
-                <input type="text" class="value-input" data-for="edgeAccent" value="0.00" />
+                <input id="cameraFov" type="range" min="20" max="100" step="1" value="60" />
+                <input type="text" class="value-input" data-for="cameraFov" value="60" />
                 <div class="step-buttons">
-                  <button type="button" class="step-btn" data-action="up" data-for="edgeAccent">▶</button>
-                  <button type="button" class="step-btn" data-action="down" data-for="edgeAccent">◀</button>
+                  <button type="button" class="step-btn" data-action="up" data-for="cameraFov">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="cameraFov">◀</button>
                 </div>
               </div>
 
@@ -1197,6 +1161,33 @@
                   </div>
                 </div>
               </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="form-section-flat">
+              <details class="collapsible">
+                <summary>Effects</summary>
+                <div class="collapsible-body">
+
+              <label for="toneMapSelect">Tone mapping</label>
+              <select id="toneMapSelect">
+                <option value="reinhard">Reinhard</option>
+                <option value="aces" selected>Filmic (ACES)</option>
+                <option value="linear">Linear</option>
+              </select>
+
+              <div style="height: 8px"></div>
+              <label for="edgeAccent">Edge accent</label>
+              <div class="slider-input">
+                <input id="edgeAccent" type="range" min="0.0" max="1.0" step="0.01" value="0.50" />
+                <input type="text" class="value-input" data-for="edgeAccent" value="0.50" />
+                <div class="step-buttons">
+                  <button type="button" class="step-btn" data-action="up" data-for="edgeAccent">▶</button>
+                  <button type="button" class="step-btn" data-action="down" data-for="edgeAccent">◀</button>
+                </div>
+              </div>
+
                 </div>
               </details>
             </div>

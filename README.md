@@ -66,6 +66,7 @@ Monte Carlo path tracing runs in a WebGL2 fragment shader. Each frame traces one
 ### Acceleration Structure
 
 A **Surface-Area-Heuristic (SAH) BVH** is built on the CPU over a unified primitive set (spheres, cylinders, triangles). The flattened BVH is packed into a 2D texture (4 vec4 per node) for GPU traversal with stackless early-termination.
+
 ---
 
 ## Running Locally

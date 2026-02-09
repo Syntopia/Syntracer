@@ -27,6 +27,7 @@ precision highp sampler3D;
 
 in vec2 vUv;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outAux;
 
 uniform sampler2D uBvhTex;
 uniform sampler2D uTriTex;
@@ -1762,16 +1763,53 @@ vec3 traceVisualization(vec3 origin, vec3 dir) {
   return vec3(0.0);
 }
 
+vec4 tracePrimaryAux(vec3 origin, vec3 dir) {
+  float t;
+  int primType;
+  int primIndex;
+  vec3 extra;
+  int traversalCost;
+  bool hit = traceClosest(origin, dir, t, primType, primIndex, extra, traversalCost, false);
+  if (!hit) {
+    return vec4(0.0);
+  }
+
+  vec3 hitPos = origin + dir * t;
+  vec3 normal;
+  if (primType == PRIM_TRIANGLE) {
+    vec3 bary = vec3(1.0 - extra.x - extra.y, extra.x, extra.y);
+    normal = fetchTriNormal(primIndex, bary);
+  } else if (primType == PRIM_SPHERE) {
+    vec4 s = fetchSphere(primIndex);
+    normal = normalize(hitPos - s.xyz);
+  } else if (primType == PRIM_CYLINDER) {
+    vec3 p1, p2; float radius;
+    fetchCylinder(primIndex, p1, p2, radius);
+    normal = cylinderNormal(hitPos, p1, p2, radius, extra.x);
+  } else {
+    return vec4(0.0);
+  }
+
+  // Keep orientation stable relative to the view direction.
+  if (dot(normal, dir) > 0.0) {
+    normal = -normal;
+  }
+
+  return vec4(normalize(normal) * 0.5 + 0.5, t);
+}
+
 void main() {
   vec2 uv = (gl_FragCoord.xy + vec2(0.5)) / uResolution * 2.0 - 1.0;
   vec3 dir = normalize(uCamForward + uv.x * uCamRight + uv.y * uCamUp);
 
   // Visualization modes (no accumulation needed)
   if (uVisMode > 0) {
+    outAux = vec4(0.0);
     vec3 color = traceVisualization(uCamOrigin, dir);
     outColor = vec4(color, 1.0);
     return;
   }
+  outAux = tracePrimaryAux(uCamOrigin, dir);
 
   // Normal path tracing with accumulation
   int spp = clamp(uSamplesPerBounce, 1, 8);
@@ -1838,6 +1876,7 @@ in vec2 vUv;
 layout(location = 0) out vec4 outColor;
 
 uniform sampler2D uDisplayTex;
+uniform sampler2D uAuxTex;
 uniform vec2 uDisplayResolution;
 uniform int uToneMapMode;
 uniform int uTransparentBg;
@@ -1871,6 +1910,45 @@ float computeEdgeAccent(vec2 uv) {
   return smoothstep(0.05, 0.28, grad);
 }
 
+vec3 decodeAuxNormal(vec4 aux) {
+  vec3 n = aux.xyz * 2.0 - 1.0;
+  float lenN = length(n);
+  if (lenN < 1e-5) return vec3(0.0, 0.0, 1.0);
+  return n / lenN;
+}
+
+float computeAuxEdgeAccent(vec2 uv) {
+  vec2 texel = 1.0 / max(uDisplayResolution, vec2(1.0));
+  vec4 c = texture(uAuxTex, uv);
+  if (c.a <= 0.0) {
+    return 0.0;
+  }
+  vec4 l = texture(uAuxTex, clamp(uv + vec2(-texel.x, 0.0), vec2(0.001), vec2(0.999)));
+  vec4 r = texture(uAuxTex, clamp(uv + vec2(texel.x, 0.0), vec2(0.001), vec2(0.999)));
+  vec4 d = texture(uAuxTex, clamp(uv + vec2(0.0, -texel.y), vec2(0.001), vec2(0.999)));
+  vec4 u = texture(uAuxTex, clamp(uv + vec2(0.0, texel.y), vec2(0.001), vec2(0.999)));
+
+  vec3 nC = decodeAuxNormal(c);
+  vec3 nL = decodeAuxNormal(l);
+  vec3 nR = decodeAuxNormal(r);
+  vec3 nD = decodeAuxNormal(d);
+  vec3 nU = decodeAuxNormal(u);
+  float nEdge = max(
+    max(1.0 - dot(nC, nL), 1.0 - dot(nC, nR)),
+    max(1.0 - dot(nC, nD), 1.0 - dot(nC, nU))
+  );
+  nEdge = smoothstep(0.03, 0.28, nEdge);
+
+  float dC = c.a;
+  float dEdge = max(
+    max(abs(dC - l.a), abs(dC - r.a)),
+    max(abs(dC - d.a), abs(dC - u.a))
+  );
+  dEdge = smoothstep(0.015, 0.20, dEdge / max(dC, 0.05));
+
+  return max(nEdge, dEdge);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy / uDisplayResolution;
   vec4 raw = texture(uDisplayTex, uv);
@@ -1881,7 +1959,9 @@ void main() {
     mapped = toneMapReinhard(raw.rgb);
   }
   if (uEdgeAccentStrength > 0.0) {
-    float edge = computeEdgeAccent(uv);
+    float edgeColor = computeEdgeAccent(uv);
+    float edgeAux = computeAuxEdgeAccent(uv);
+    float edge = max(edgeColor * 0.35, edgeAux);
     mapped *= (1.0 - 0.7 * edge * clamp(uEdgeAccentStrength, 0.0, 1.0));
   }
   if (uTransparentBg == 1) {
@@ -1958,10 +2038,16 @@ export function createCdfTexture(gl, data, width, height) {
   return tex;
 }
 
-function createFramebuffer(gl, tex) {
+function createFramebuffer(gl, colorTex, auxTex = null) {
   const fb = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+  if (auxTex) {
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, auxTex, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  } else {
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  }
   const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
@@ -2014,10 +2100,13 @@ export function createVolumeTexture(gl, width, height, depth, data) {
 export function createAccumTargets(gl, width, height) {
   const texA = createFloatTexture(gl, width, height, null);
   const texB = createFloatTexture(gl, width, height, null);
-  const fbA = createFramebuffer(gl, texA);
-  const fbB = createFramebuffer(gl, texB);
+  const auxA = createFloatTexture(gl, width, height, null);
+  const auxB = createFloatTexture(gl, width, height, null);
+  const fbA = createFramebuffer(gl, texA, auxA);
+  const fbB = createFramebuffer(gl, texB, auxB);
   return {
     textures: [texA, texB],
+    auxTextures: [auxA, auxB],
     framebuffers: [fbA, fbB],
     width,
     height
@@ -2029,6 +2118,7 @@ export function resizeAccumTargets(gl, targets, width, height) {
     return targets;
   }
   targets.textures.forEach((tex) => gl.deleteTexture(tex));
+  targets.auxTextures?.forEach((tex) => gl.deleteTexture(tex));
   targets.framebuffers.forEach((fb) => gl.deleteFramebuffer(fb));
   return createAccumTargets(gl, width, height);
 }
@@ -2181,6 +2271,7 @@ export function setTraceUniforms(gl, program, uniforms) {
 export function setDisplayUniforms(gl, program, uniforms) {
   gl.useProgram(program);
   gl.uniform1i(gl.getUniformLocation(program, "uDisplayTex"), uniforms.displayUnit);
+  gl.uniform1i(gl.getUniformLocation(program, "uAuxTex"), uniforms.auxUnit ?? 1);
   gl.uniform2fv(gl.getUniformLocation(program, "uDisplayResolution"), uniforms.displayResolution);
   const mode = uniforms.toneMap === "aces" ? 1 : (uniforms.toneMap === "linear" ? 0 : 2);
   gl.uniform1i(gl.getUniformLocation(program, "uToneMapMode"), mode);

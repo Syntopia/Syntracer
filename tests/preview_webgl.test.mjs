@@ -43,11 +43,7 @@ test("normalizePreviewQualitySettings applies defaults", () => {
   const settings = normalizePreviewQualitySettings(undefined);
   assert.deepEqual(settings, {
     shadows: true,
-    ssao: false,
     ssr: false,
-    ssaoRadiusPx: 3.0,
-    ssaoDepthStrength: 0.2,
-    ssaoEdgeStrength: 0.25,
     edgeAccentStrength: 0.0,
     lightIntensityScale: 1.0
   });
@@ -56,21 +52,13 @@ test("normalizePreviewQualitySettings applies defaults", () => {
 test("normalizePreviewQualitySettings clamps values", () => {
   const settings = normalizePreviewQualitySettings({
     shadows: false,
-    ssao: 1,
     ssr: "yes",
-    ssaoRadiusPx: 99,
-    ssaoDepthStrength: 2,
-    ssaoEdgeStrength: -1,
     edgeAccentStrength: 99,
     lightIntensityScale: 99
   });
   assert.deepEqual(settings, {
     shadows: false,
-    ssao: true,
     ssr: true,
-    ssaoRadiusPx: 12.0,
-    ssaoDepthStrength: 1.0,
-    ssaoEdgeStrength: 0.0,
     edgeAccentStrength: 1.0,
     lightIntensityScale: 3.0
   });

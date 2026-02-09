@@ -120,6 +120,7 @@ const showSheetHbondsToggle = document.getElementById("showSheetHbonds");
 const surfaceOpacityInput = document.getElementById("surfaceOpacity");
 const maxBouncesInput = document.getElementById("maxBounces");
 const exposureInput = document.getElementById("exposure");
+const cameraFovInput = document.getElementById("cameraFov");
 const dofEnableToggle = document.getElementById("dofEnable");
 const dofApertureInput = document.getElementById("dofAperture");
 const dofFocusDistanceInput = document.getElementById("dofFocusDistance");
@@ -131,10 +132,6 @@ const toneMapSelect = document.getElementById("toneMapSelect");
 const edgeAccentInput = document.getElementById("edgeAccent");
 const shadowToggle = document.getElementById("shadowToggle");
 const previewShadowsToggle = document.getElementById("previewShadowsToggle");
-const previewSsaoToggle = document.getElementById("previewSsaoToggle");
-const previewSsaoRadiusInput = document.getElementById("previewSsaoRadius");
-const previewSsaoDepthStrengthInput = document.getElementById("previewSsaoDepthStrength");
-const previewSsaoEdgeStrengthInput = document.getElementById("previewSsaoEdgeStrength");
 const previewSsrToggle = document.getElementById("previewSsrToggle");
 const previewLightIntensityInput = document.getElementById("previewLightIntensity");
 const volumeEnableToggle = document.getElementById("volumeEnable");
@@ -242,7 +239,7 @@ const renderState = {
   dofAperture: 0.03,
   dofFocusDistance: 4.0,
   toneMap: "aces",
-  edgeAccent: 0.0,
+  edgeAccent: 0.5,
   ambientIntensity: 0.0,
   ambientColor: [1.0, 1.0, 1.0],
   envUrl: null,
@@ -258,11 +255,7 @@ const renderState = {
   samplesPerBounce: 1,
   castShadows: true,
   previewShadows: true,
-  previewSsao: true,
   previewSsr: true,
-  previewSsaoRadiusPx: 3.0,
-  previewSsaoDepthStrength: 0.2,
-  previewSsaoEdgeStrength: 0.25,
   previewLightIntensity: 1.0,
   volumeEnabled: false,
   volumeColor: [0.435, 0.643, 1.0],
@@ -303,6 +296,15 @@ const interactionState = {
   lastActive: 0
 };
 
+const AUTO_FIT_ZOOM_FACTOR = 1.8;
+const PREVIEW_EDGE_ACCENT_SCALE = 0.5;
+const PREVIEW_FPS_IDLE_MS = 1000;
+const FPS_RESET_GAP_MS = 750;
+const FPS_MIN_DT_SAMPLES = 8;
+const FPS_MIN_DT_MS = 4;
+const FPS_MAX_DT_MS = 1000;
+const FPS_SMOOTH_ALPHA = 0.2;
+
 const pointerState = {
   overCanvas: false,
   x: 0,
@@ -310,6 +312,102 @@ const pointerState = {
 };
 
 let hoverOverlayErrorMessage = null;
+const renderStats = {
+  frameDtMs: [],
+  lastFrameTimeMs: 0,
+  fpsSmoothed: 0,
+  lastRenderedAtMs: 0,
+  lastMode: RENDER_MODES.PATHTRACING,
+  lastPrimaryText: "",
+  lastFpsUiUpdateMs: 0
+};
+
+function ensureRenderOverlayRows() {
+  if (!renderOverlay) return { primaryEl: null, fpsEl: null };
+  let primaryEl = renderOverlay.querySelector(".render-overlay-primary");
+  let fpsEl = renderOverlay.querySelector(".render-overlay-fps");
+  if (!primaryEl || !fpsEl) {
+    renderOverlay.innerHTML = "";
+    primaryEl = document.createElement("div");
+    primaryEl.className = "render-overlay-primary";
+    fpsEl = document.createElement("div");
+    fpsEl.className = "render-overlay-fps";
+    renderOverlay.appendChild(primaryEl);
+    renderOverlay.appendChild(fpsEl);
+  }
+  return { primaryEl, fpsEl };
+}
+
+function resetFpsStats() {
+  renderStats.frameDtMs.length = 0;
+  renderStats.fpsSmoothed = 0;
+  renderStats.lastFrameTimeMs = 0;
+}
+
+function noteRenderedFrame(mode) {
+  const now = performance.now();
+  if (renderStats.lastRenderedAtMs > 0 && (now - renderStats.lastRenderedAtMs) > FPS_RESET_GAP_MS) {
+    resetFpsStats();
+  }
+  if (renderStats.lastFrameTimeMs > 0) {
+    const dtMs = now - renderStats.lastFrameTimeMs;
+    if (dtMs >= FPS_MIN_DT_MS && dtMs <= FPS_MAX_DT_MS) {
+      renderStats.frameDtMs.push(dtMs);
+      if (renderStats.frameDtMs.length > 120) {
+        renderStats.frameDtMs.shift();
+      }
+    }
+  }
+  renderStats.lastFrameTimeMs = now;
+  renderStats.lastRenderedAtMs = now;
+  renderStats.lastMode = mode;
+}
+
+function formatFpsOverlayText() {
+  const now = performance.now();
+  if (renderStats.lastMode === RENDER_MODES.PREVIEW && now - renderStats.lastRenderedAtMs > PREVIEW_FPS_IDLE_MS) {
+    return "FPS: idle";
+  }
+  const dts = renderStats.frameDtMs;
+  if (dts.length < FPS_MIN_DT_SAMPLES) {
+    return "FPS: --";
+  }
+  const sorted = dts.slice().sort((a, b) => a - b);
+  const trim = Math.floor(sorted.length * 0.15);
+  const kept = sorted.slice(trim, sorted.length - trim);
+  if (kept.length === 0) {
+    return "FPS: --";
+  }
+  const avgDt = kept.reduce((sum, dt) => sum + dt, 0) / kept.length;
+  if (!Number.isFinite(avgDt) || avgDt <= 0) {
+    return "FPS: --";
+  }
+  const fpsRaw = Math.min(240, 1000 / avgDt);
+  renderStats.fpsSmoothed = renderStats.fpsSmoothed > 0
+    ? renderStats.fpsSmoothed * (1 - FPS_SMOOTH_ALPHA) + fpsRaw * FPS_SMOOTH_ALPHA
+    : fpsRaw;
+  return `FPS: ${renderStats.fpsSmoothed.toFixed(1)}`;
+}
+
+function setRenderOverlayText(primaryText) {
+  if (!renderOverlay) return;
+  const { primaryEl, fpsEl } = ensureRenderOverlayRows();
+  if (!primaryEl || !fpsEl) return;
+  renderStats.lastPrimaryText = primaryText;
+  primaryEl.textContent = primaryText;
+  fpsEl.textContent = formatFpsOverlayText();
+  renderStats.lastFpsUiUpdateMs = performance.now();
+  renderOverlay.style.display = "block";
+}
+
+function refreshRenderOverlayFpsOnly(timeMs) {
+  if (!renderOverlay || !renderStats.lastPrimaryText) return;
+  if (timeMs - renderStats.lastFpsUiUpdateMs < 200) return;
+  const { fpsEl } = ensureRenderOverlayRows();
+  if (!fpsEl) return;
+  fpsEl.textContent = formatFpsOverlayText();
+  renderStats.lastFpsUiUpdateMs = timeMs;
+}
 
 const OBJECT_TYPE_LABELS = Object.freeze({
   protein: "Protein",
@@ -1462,6 +1560,7 @@ function lightDirFromAngles(azimuthDeg, elevationDeg) {
 function resetAccumulation(reason) {
   renderState.frameIndex = 0;
   renderState.cameraDirty = true;
+  resetFpsStats();
   if (renderOverlay) {
     renderOverlay.style.display = "none";
   }
@@ -1484,6 +1583,11 @@ function updateRenderModeUi() {
 function updateMaterialState() {
   renderState.maxBounces = clamp(Number(maxBouncesInput.value), 0, 6);
   renderState.exposure = clamp(Number(exposureInput.value), 0, 5);
+  const fovDeg = requireNumberInput(cameraFovInput, "Camera FOV");
+  if (fovDeg < 20.0 || fovDeg > 100.0) {
+    throw new Error("Camera FOV must be between 20 and 100 degrees.");
+  }
+  cameraState.fov = (fovDeg * Math.PI) / 180.0;
   renderState.dofEnabled = dofEnableToggle?.checked ?? false;
   const dofAperture = requireNumberInput(dofApertureInput, "Depth-of-field aperture");
   const dofFocusDistance = requireNumberInput(dofFocusDistanceInput, "Depth-of-field focus distance");
@@ -1511,13 +1615,19 @@ function updateMaterialState() {
 
 function updatePreviewQualityState() {
   renderState.previewShadows = previewShadowsToggle?.checked ?? true;
-  renderState.previewSsao = previewSsaoToggle?.checked ?? false;
   renderState.previewSsr = previewSsrToggle?.checked ?? false;
-  renderState.previewSsaoRadiusPx = clamp(Number(previewSsaoRadiusInput?.value ?? 3.0), 1.0, 12.0);
-  renderState.previewSsaoDepthStrength = clamp(Number(previewSsaoDepthStrengthInput?.value ?? 0.2), 0.0, 1.0);
-  renderState.previewSsaoEdgeStrength = clamp(Number(previewSsaoEdgeStrengthInput?.value ?? 0.25), 0.0, 1.0);
   renderState.previewLightIntensity = clamp(Number(previewLightIntensityInput?.value ?? 1.0), 0.0, 2.0);
   resetAccumulation("Preview quality updated.");
+}
+
+function getEffectiveEdgeAccentStrength() {
+  if (renderState.dofEnabled) {
+    return 0.0;
+  }
+  if (isCameraInteracting()) {
+    return 0.0;
+  }
+  return renderState.edgeAccent;
 }
 
 function updateVolumeState() {
@@ -1757,7 +1867,8 @@ function applyCameraToBounds(bounds) {
   const dy = bounds.maxY - bounds.minY;
   const dz = bounds.maxZ - bounds.minZ;
   const radius = Math.max(1e-3, Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5);
-  const distance = radius / Math.tan(cameraState.fov / 2) * 1.4;
+  const fitDistance = radius / Math.tan(cameraState.fov / 2) * 1.4;
+  const distance = fitDistance / AUTO_FIT_ZOOM_FACTOR;
   cameraState.target = [cx, cy, cz];
   cameraState.distance = distance;
   // Pitch camera down ~15 degrees so we look slightly upward into the sky
@@ -2723,6 +2834,8 @@ function renderPreviewFrameInternal() {
     cameraRelativeLightDir(light.azimuth, light.elevation, camForward, camRight, camUp)
   );
   const clip = getActiveClipPlane(camera);
+  const edgeAccentStrength = getEffectiveEdgeAccentStrength();
+  const previewEdgeAccentStrength = edgeAccentStrength * PREVIEW_EDGE_ACCENT_SCALE;
 
   renderPreviewFrame(backend, {
     sceneData,
@@ -2739,12 +2852,8 @@ function renderPreviewFrameInternal() {
     volumeState,
     previewQuality: {
       shadows: renderState.previewShadows,
-      ssao: renderState.previewSsao,
       ssr: renderState.previewSsr,
-      ssaoRadiusPx: renderState.previewSsaoRadiusPx,
-      ssaoDepthStrength: renderState.previewSsaoDepthStrength,
-      ssaoEdgeStrength: renderState.previewSsaoEdgeStrength,
-      edgeAccentStrength: renderState.edgeAccent,
+      edgeAccentStrength: previewEdgeAccentStrength,
       lightIntensityScale: renderState.previewLightIntensity
     },
     logger
@@ -2752,13 +2861,11 @@ function renderPreviewFrameInternal() {
 
   renderState.frameIndex = 0;
   renderState.cameraDirty = false;
+  noteRenderedFrame(RENDER_MODES.PREVIEW);
 
-  if (renderOverlay) {
-    const polyCount = sceneData.triCount || 0;
-    const primCount = (sceneData.sphereCount || 0) + (sceneData.cylinderCount || 0);
-    renderOverlay.textContent = `Preview (Raster) ${formatPolyCount(polyCount)} plys, ${formatPolyCount(primCount)} prims`;
-    renderOverlay.style.display = "block";
-  }
+  const polyCount = sceneData.triCount || 0;
+  const primCount = (sceneData.sphereCount || 0) + (sceneData.cylinderCount || 0);
+  setRenderOverlayText(`Preview (Raster) ${formatPolyCount(polyCount)} plys, ${formatPolyCount(primCount)} prims`);
   safeUpdateHoverBoxOverlay(camera);
 }
 
@@ -3051,24 +3158,27 @@ setTraceUniforms(gl, traceProgram, {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, displayWidth, displayHeight);
   createTextureUnit(gl, glState.accum.textures[accumIndex], 0);
+  createTextureUnit(gl, glState.accum.auxTextures[accumIndex], 1);
+  const edgeAccentStrength = getEffectiveEdgeAccentStrength();
 
   setDisplayUniforms(gl, displayProgram, {
     displayUnit: 0,
+    auxUnit: 1,
     displayResolution: [displayWidth, displayHeight],
     toneMap: renderState.toneMap,
-    edgeAccentStrength: renderState.edgeAccent,
+    edgeAccentStrength,
     transparentBg: renderState.transparentBg
   });
 
   gl.useProgram(displayProgram);
   drawFullscreen(gl);
+  noteRenderedFrame(RENDER_MODES.PATHTRACING);
 
-  if (renderOverlay && sceneData) {
+  if (sceneData) {
     const maxFrames = renderState.maxFrames > 0 ? renderState.maxFrames : "∞";
     const polyCount = sceneData.triCount || 0;
     const primCount = (sceneData.sphereCount || 0) + (sceneData.cylinderCount || 0);
-    renderOverlay.textContent = `${renderState.frameIndex}/${maxFrames} ${formatPolyCount(polyCount)} plys, ${formatPolyCount(primCount)} prims`;
-    renderOverlay.style.display = "block";
+    setRenderOverlayText(`${renderState.frameIndex}/${maxFrames} ${formatPolyCount(polyCount)} plys, ${formatPolyCount(primCount)} prims`);
   }
   safeUpdateHoverBoxOverlay(camera);
 }
@@ -3098,6 +3208,14 @@ async function startRenderLoop() {
     if (moved) {
       renderState.cameraDirty = true;
       markInteractionActive(time);
+    }
+    if (renderModeController.isPreview()) {
+      const shouldRenderPreview = renderState.cameraDirty || movingNow || moved;
+      if (!shouldRenderPreview) {
+        refreshRenderOverlayFpsOnly(time);
+        requestAnimationFrame(loop);
+        return;
+      }
     }
     if (
       !renderModeController.isPreview()
@@ -3224,11 +3342,13 @@ async function hiresRender() {
     const finalAccumIdx = (glState.frameParity + 1) % 2;
     gl.viewport(0, 0, width, height);
     createTextureUnit(gl, glState.accum.textures[finalAccumIdx], 0);
+    createTextureUnit(gl, glState.accum.auxTextures[finalAccumIdx], 1);
     setDisplayUniforms(gl, displayProgram, {
       displayUnit: 0,
+      auxUnit: 1,
       displayResolution: [width, height],
       toneMap: renderState.toneMap,
-      edgeAccentStrength: renderState.edgeAccent,
+      edgeAccentStrength: renderState.dofEnabled ? 0.0 : renderState.edgeAccent,
       transparentBg: transparent ? 1 : 0
     });
     gl.useProgram(displayProgram);
@@ -3270,6 +3390,7 @@ async function hiresRender() {
   renderState.transparentBg = savedTransparentBg;
   renderState.hiresMode = savedHiresMode;
   hiresAccum.textures.forEach(t => gl.deleteTexture(t));
+  hiresAccum.auxTextures?.forEach(t => gl.deleteTexture(t));
   hiresAccum.framebuffers.forEach(f => gl.deleteFramebuffer(f));
   glState.accum = savedAccum;
   glState.frameParity = savedFrameParity;
@@ -3760,6 +3881,7 @@ representationActionBtn?.addEventListener("click", () => {
 });
 maxBouncesInput.addEventListener("input", updateMaterialState);
 exposureInput.addEventListener("input", updateMaterialState);
+cameraFovInput?.addEventListener("input", updateMaterialState);
 dofEnableToggle?.addEventListener("change", () => {
   updateDofVisibility();
   updateMaterialState();
@@ -3774,10 +3896,6 @@ samplesPerBounceInput.addEventListener("input", updateMaterialState);
 maxFramesInput?.addEventListener("input", updateRenderLimits);
 shadowToggle.addEventListener("change", updateMaterialState);
 previewShadowsToggle?.addEventListener("change", updatePreviewQualityState);
-previewSsaoToggle?.addEventListener("change", updatePreviewQualityState);
-previewSsaoRadiusInput?.addEventListener("input", updatePreviewQualityState);
-previewSsaoDepthStrengthInput?.addEventListener("input", updatePreviewQualityState);
-previewSsaoEdgeStrengthInput?.addEventListener("input", updatePreviewQualityState);
 previewSsrToggle?.addEventListener("change", updatePreviewQualityState);
 previewLightIntensityInput?.addEventListener("input", updatePreviewQualityState);
 

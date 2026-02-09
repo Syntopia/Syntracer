@@ -189,11 +189,7 @@ function clampNumber(value, min, max, fallback) {
 export function normalizePreviewQualitySettings(input) {
   return {
     shadows: input?.shadows !== false,
-    ssao: Boolean(input?.ssao),
     ssr: Boolean(input?.ssr),
-    ssaoRadiusPx: clampNumber(input?.ssaoRadiusPx, 1.0, 12.0, 3.0),
-    ssaoDepthStrength: clampNumber(input?.ssaoDepthStrength, 0.0, 1.0, 0.2),
-    ssaoEdgeStrength: clampNumber(input?.ssaoEdgeStrength, 0.0, 1.0, 0.25),
     edgeAccentStrength: clampNumber(input?.edgeAccentStrength, 0.0, 1.0, 0.0),
     lightIntensityScale: clampNumber(input?.lightIntensityScale, 0.0, 3.0, 1.0)
   };
@@ -792,13 +788,9 @@ uniform sampler2D uSceneColor;
 uniform sampler2D uSceneNormal;
 uniform sampler2D uSceneDepth;
 uniform vec2 uResolution;
-uniform int uEnableSsao;
 uniform int uEnableSsr;
 uniform mat4 uInvViewProj;
 uniform vec3 uCameraPos;
-uniform float uSsaoRadiusPx;
-uniform float uSsaoDepthStrength;
-uniform float uSsaoEdgeStrength;
 uniform float uEdgeAccentStrength;
 
 layout(location = 0) out vec4 outColor;
@@ -818,41 +810,6 @@ vec3 worldPosAt(vec2 uv, float depth) {
   vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
   vec4 world = uInvViewProj * clip;
   return world.xyz / max(world.w, 1e-6);
-}
-
-float computeSsao(vec2 uv, vec3 centerPos, vec3 centerNormal) {
-  vec2 offsets[8] = vec2[8](
-    vec2(1.0, 0.0),
-    vec2(-1.0, 0.0),
-    vec2(0.0, 1.0),
-    vec2(0.0, -1.0),
-    vec2(0.707, 0.707),
-    vec2(-0.707, 0.707),
-    vec2(0.707, -0.707),
-    vec2(-0.707, -0.707)
-  );
-  float occ = 0.0;
-  float radiusPx = uSsaoRadiusPx;
-  vec2 texel = 1.0 / max(uResolution, vec2(1.0));
-  float centerCamDist = length(centerPos - uCameraPos);
-  for (int i = 0; i < 8; i++) {
-    vec2 suv = clamp(uv + offsets[i] * texel * radiusPx, vec2(0.001), vec2(0.999));
-    float sd = depthAt(suv);
-    if (sd >= 0.999999) continue;
-    vec3 spos = worldPosAt(suv, sd);
-    vec3 dir = spos - centerPos;
-    float dist = length(dir);
-    if (dist < 1e-5) continue;
-    vec3 ndir = dir / dist;
-    float sampleCamDist = length(spos - uCameraPos);
-    float viewDepthDelta = centerCamDist - sampleCamDist;
-    float depthScale = max(0.02, centerCamDist * 0.03);
-    float depthOcc = smoothstep(0.0, depthScale, viewDepthDelta);
-    float alignment = clamp(dot(centerNormal, ndir) * 0.5 + 0.5, 0.0, 1.0);
-    float proximity = 1.0 - smoothstep(0.0, depthScale * 12.0, dist);
-    occ += depthOcc * mix(0.35, 1.0, alignment) * mix(0.35, 1.0, proximity);
-  }
-  return clamp(1.0 - occ * uSsaoDepthStrength * 0.65, 0.4, 1.0);
 }
 
 vec3 computeSsr(vec2 uv, vec3 baseColor, vec3 centerPos, vec3 centerNormal, float roughnessHint) {
@@ -893,7 +850,8 @@ float computeNormalOcclusion(vec2 uv, vec3 centerNormal) {
     vec3 n = normalAt(clamp(uv + offsets[i] * texel * 2.0, vec2(0.001), vec2(0.999)));
     edge += (1.0 - max(dot(centerNormal, n), 0.0));
   }
-  return clamp(1.0 - edge * uSsaoEdgeStrength, 0.6, 1.0);
+  float edgeStrength = clamp(uEdgeAccentStrength, 0.0, 1.0) * 0.85;
+  return clamp(1.0 - edge * edgeStrength, 0.6, 1.0);
 }
 
 vec3 computeSsrFallback(vec2 uv, vec3 baseColor, vec3 normal) {
@@ -936,10 +894,10 @@ void main() {
 
   vec3 color = scene.rgb;
   vec3 normal = normalAt(uv);
-  if (depth >= 0.999999 || (uEnableSsao == 0 && uEnableSsr == 0)) {
-    if (uEnableSsao == 1) {
-      color *= computeNormalOcclusion(uv, normal);
-    }
+  if (uEdgeAccentStrength > 0.0) {
+    color *= computeNormalOcclusion(uv, normal);
+  }
+  if (depth >= 0.999999 || uEnableSsr == 0) {
     if (uEnableSsr == 1) {
       color = computeSsrFallback(uv, color, normal);
     }
@@ -954,12 +912,6 @@ void main() {
   vec3 pos = worldPosAt(uv, depth);
   float roughnessHint = 0.5 + 0.5 * abs(normal.z);
 
-  if (uEnableSsao == 1) {
-    float aoDepth = computeSsao(uv, pos, normal);
-    float aoNormal = computeNormalOcclusion(uv, normal);
-    float ao = min(aoDepth, aoNormal);
-    color *= ao;
-  }
   if (uEnableSsr == 1) {
     vec3 ssrDepth = computeSsr(uv, color, pos, normal, roughnessHint);
     vec3 ssrFallback = computeSsrFallback(uv, color, normal);
@@ -1522,11 +1474,7 @@ function renderComposite(previewState, params) {
   gl.uniform1i(gl.getUniformLocation(previewState.compositeProgram, "uSceneDepth"), 14);
 
   gl.uniform2fv(gl.getUniformLocation(previewState.compositeProgram, "uResolution"), new Float32Array([displayWidth, displayHeight]));
-  gl.uniform1i(gl.getUniformLocation(previewState.compositeProgram, "uEnableSsao"), quality.ssao ? 1 : 0);
   gl.uniform1i(gl.getUniformLocation(previewState.compositeProgram, "uEnableSsr"), quality.ssr ? 1 : 0);
-  gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoRadiusPx"), quality.ssaoRadiusPx);
-  gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoDepthStrength"), quality.ssaoDepthStrength);
-  gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uSsaoEdgeStrength"), quality.ssaoEdgeStrength);
   gl.uniform1f(gl.getUniformLocation(previewState.compositeProgram, "uEdgeAccentStrength"), quality.edgeAccentStrength);
   gl.uniform3fv(gl.getUniformLocation(previewState.compositeProgram, "uCameraPos"), new Float32Array(camera.origin));
   gl.uniformMatrix4fv(gl.getUniformLocation(previewState.compositeProgram, "uInvViewProj"), false, invertMatrix4(viewProj));
