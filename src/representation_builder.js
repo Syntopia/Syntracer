@@ -107,7 +107,7 @@ function buildCylinderBondAtomPairs(molData, cylinderCount, splitBondColors) {
   return pairs;
 }
 
-function buildSesTriangles(molData, display, material) {
+async function buildSesTriangles(molData, display, material, onProgress) {
   if (!molData?.atoms?.length) {
     throw new Error("SES representation requires atoms.");
   }
@@ -120,10 +120,11 @@ function buildSesTriangles(molData, display, material) {
     };
   });
 
-  const sesMesh = computeSESWebGL(atoms, {
+  const sesMesh = await computeSESWebGL(atoms, {
     probeRadius: display.probeRadius,
     resolution: display.surfaceResolution,
-    smoothNormals: display.smoothNormals
+    smoothNormals: display.smoothNormals,
+    onProgress
   });
 
   if (!sesMesh || !sesMesh.vertices || sesMesh.vertices.length === 0) {
@@ -257,8 +258,8 @@ function buildVolumeIsosurfaceTriangles(volumeData, display, material) {
   };
 }
 
-export function buildRepresentationGeometry(input) {
-  const { object, representation, logger } = input || {};
+export async function buildRepresentationGeometry(input) {
+  const { object, representation, logger, onProgress } = input || {};
   if (!object || !representation) {
     throw new Error("Representation build requires object and representation.");
   }
@@ -320,7 +321,7 @@ export function buildRepresentationGeometry(input) {
       cylinders = cylinders.concat(buildSheetHbondCylinders(molData));
     }
   } else if (display.style === "ses") {
-    triangles = buildSesTriangles(molData, display, material);
+    triangles = await buildSesTriangles(molData, display, material, onProgress);
   } else {
     const atomBond = buildAtomBondGeometry(molData, display);
     spheres = atomBond.spheres;

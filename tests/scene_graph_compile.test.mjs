@@ -22,7 +22,7 @@ function makeMolData() {
   };
 }
 
-test("compileSceneGraphGeometry compiles visible representations and chooses selected primary material", () => {
+test("compileSceneGraphGeometry compiles visible representations and chooses selected primary material", async () => {
   const graph = createSceneGraphFromMolData(makeMolData(), { sourceKind: "sdf" });
   const object = graph.objects[0];
   const rep = object.representations[0];
@@ -34,7 +34,7 @@ test("compileSceneGraphGeometry compiles visible representations and chooses sel
   selectRepresentation(graph, object.id, rep.id);
 
   const cache = new Map();
-  const compiled = compileSceneGraphGeometry(graph, { geometryCache: cache, logger: null });
+  const compiled = await compileSceneGraphGeometry(graph, { geometryCache: cache, logger: null });
   assert.equal(compiled.spheres.length, 2);
   assert.equal(compiled.cylinders.length, 2);  // stick style splits each bond into 2 half-cylinders
   assert.equal(compiled.materials.length, 1);
@@ -45,7 +45,7 @@ test("compileSceneGraphGeometry compiles visible representations and chooses sel
   assert.ok(cache.has(rep.id));
 });
 
-test("compileSceneGraphGeometry reports conflicts when visible representations have different materials", () => {
+test("compileSceneGraphGeometry reports conflicts when visible representations have different materials", async () => {
   const graph = createSceneGraphFromMolData(makeMolData(), { sourceKind: "sdf" });
   const object = graph.objects[0];
   const baseRep = object.representations[0];
@@ -60,18 +60,18 @@ test("compileSceneGraphGeometry reports conflicts when visible representations h
     material: { mode: "matte" }
   });
 
-  const compiled = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
+  const compiled = await compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
   assert.equal(compiled.hasMaterialConflict, true);
   assert.equal(compiled.materials.length, 2);
   assert.equal(compiled.sphereMaterialIndices.length, 4);
   assert.equal(compiled.cylinderMaterialIndices.length, 2);  // stick style: 2 half-cylinders per bond
 
   toggleRepresentationVisibility(graph, object.id, added.id, false);
-  const compiledNoConflict = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
+  const compiledNoConflict = await compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
   assert.equal(compiledNoConflict.hasMaterialConflict, false);
 });
 
-test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond metadata", () => {
+test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond metadata", async () => {
   const graph = createSceneGraphFromMolData(makeMolData(), { sourceKind: "sdf" });
   const object = graph.objects[0];
   const baseRep = object.representations[0];
@@ -84,7 +84,7 @@ test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond
     display: { style: "vdw", atomScale: 1.0 }
   });
 
-  const compiled = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
+  const compiled = await compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
   assert.ok(compiled.pickRanges);
   assert.equal(compiled.pickRanges.sphereRanges.length, 2);
   assert.equal(compiled.pickRanges.cylinderRanges.length, 1);
@@ -102,7 +102,7 @@ test("compileSceneGraphGeometry exposes primitive pick ranges with atom and bond
   assert.deepEqual(cylinderRange.cylinderBondAtomPairs, [[0, 1], [0, 1]]);  // stick style: 2 half-cylinders per bond
 });
 
-test("compileSceneGraphGeometry exposes active volumetric representation metadata", () => {
+test("compileSceneGraphGeometry exposes active volumetric representation metadata", async () => {
   const graph = createSceneGraphFromMolData(makeMolData(), {
     sourceKind: "sdf",
     volumeGrids: [{
@@ -131,7 +131,7 @@ test("compileSceneGraphGeometry exposes active volumetric representation metadat
     }
   });
 
-  const compiled = compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
+  const compiled = await compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null });
   assert.ok(compiled.volumeData);
   assert.equal(compiled.volumeData.dims[0], 2);
   assert.ok(compiled.volumeDisplay);
@@ -139,7 +139,7 @@ test("compileSceneGraphGeometry exposes active volumetric representation metadat
   assert.equal(compiled.volumeDisplay.volumeTransferPreset, "heatmap");
 });
 
-test("compileSceneGraphGeometry fails when multiple volumetric representations are visible", () => {
+test("compileSceneGraphGeometry fails when multiple volumetric representations are visible", async () => {
   const graph = createSceneGraphFromMolData(makeMolData(), {
     sourceKind: "sdf",
     volumeGrids: [{
@@ -164,7 +164,7 @@ test("compileSceneGraphGeometry fails when multiple volumetric representations a
     display: { style: "volumetric", volumeValueMin: 0.2, volumeValueMax: 0.9 }
   });
 
-  assert.throws(
+  await assert.rejects(
     () => compileSceneGraphGeometry(graph, { geometryCache: new Map(), logger: null }),
     /Multiple volumetric representations are visible/i
   );

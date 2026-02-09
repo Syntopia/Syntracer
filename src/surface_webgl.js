@@ -1196,11 +1196,12 @@ function filterSESComponentsGPU(mesh, atoms, probeRadius, maxAtomRadius) {
 /**
  * Compute SES using WebGL GPU acceleration.
  */
-export function computeSESWebGL(atoms, options = {}) {
+export async function computeSESWebGL(atoms, options = {}) {
   const probeRadius = options.probeRadius ?? 1.4;
   const resolution = options.resolution ?? 0.25;
   const returnSAS = options.sas ?? false;
   const smoothNormals = options.smoothNormals ?? false;
+  const onProgress = options.onProgress ?? null;
 
   if (atoms.length === 0) {
     return { vertices: new Float32Array(0), normals: new Float32Array(0), indices: new Uint32Array(0) };
@@ -1225,10 +1226,14 @@ export function computeSESWebGL(atoms, options = {}) {
   const maxDist = 2 * resolution;
   const padding = 2 * probeRadius + maxAtomRadius + resolution;
 
+  const totalSteps = returnSAS ? 2 : 5;
+
   // Step 1: Compute SAS distance field on GPU
+  if (onProgress) { onProgress(1, totalSteps, "Computing SAS distance field..."); await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0))); }
   const sasGrid = computeDistanceFieldGPU(atoms, bounds, resolution, probeRadius, maxDist, padding);
 
   // Step 2: Extract SAS mesh
+  if (onProgress) { onProgress(2, totalSteps, "Extracting SAS mesh..."); await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0))); }
   const sasMesh = marchingCubesGPU(sasGrid, 0, { smoothNormals });
 
   if (sasMesh.vertices.length === 0) {
@@ -1239,6 +1244,7 @@ export function computeSESWebGL(atoms, options = {}) {
   }
 
   // Step 3: Build SES distance field from SAS vertices
+  if (onProgress) { onProgress(3, totalSteps, "Computing SES distance field..."); await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0))); }
   const sasVertexCount = sasMesh.vertices.length / 3;
   const sasAtoms = [];
 
@@ -1267,9 +1273,11 @@ export function computeSESWebGL(atoms, options = {}) {
   const sesGrid = computeDistanceFieldGPU(sasAtoms, bounds, resolution, probeRadius, maxDist, padding);
 
   // Step 4: Extract SES mesh
+  if (onProgress) { onProgress(4, totalSteps, "Extracting SES mesh..."); await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0))); }
   let sesMesh = marchingCubesGPU(sesGrid, 0, { smoothNormals });
 
   // Step 5: Filter components
+  if (onProgress) { onProgress(5, totalSteps, "Filtering surface components..."); await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0))); }
   sesMesh = filterSESComponentsGPU(sesMesh, atoms, probeRadius, maxAtomRadius);
 
   // Flip normals

@@ -25,7 +25,7 @@ function hasColor(triColors, target, eps = 1e-3) {
   return false;
 }
 
-test("volume isosurface colors positive and negative levels separately", () => {
+test("volume isosurface colors positive and negative levels separately", async () => {
   const data = new Float32Array([
     -1.0, -0.1,
      0.1,  1.0,
@@ -57,13 +57,13 @@ test("volume isosurface colors positive and negative levels separately", () => {
     material: createDefaultMaterial()
   };
 
-  const geometry = buildRepresentationGeometry({ object, representation });
+  const geometry = await buildRepresentationGeometry({ object, representation });
   assert.ok(geometry.indices.length > 0, "Isosurface should produce triangles.");
   assert.ok(hasColor(geometry.triColors, [0.0, 1.0, 0.0]), "Positive surface color missing.");
   assert.ok(hasColor(geometry.triColors, [1.0, 0.0, 0.0]), "Negative surface color missing.");
 });
 
-test("volume isosurface isoLevel=0 remains finite when grid contains zeros", () => {
+test("volume isosurface isoLevel=0 remains finite when grid contains zeros", async () => {
   const data = new Float32Array([
     -1.0, 0.0,
      0.0, 1.0,
@@ -91,6 +91,6 @@ test("volume isosurface isoLevel=0 remains finite when grid contains zeros", () 
     material: createDefaultMaterial()
   };
 
-  const geometry = buildRepresentationGeometry({ object, representation });
+  const geometry = await buildRepresentationGeometry({ object, representation });
   assert.ok(Number.isFinite(geometry.positions[0]));
 });

@@ -116,12 +116,13 @@ function resolvePrimaryMaterial(sceneGraph, visibleEntries) {
   return visibleEntries[0].representation.material;
 }
 
-export function compileSceneGraphGeometry(sceneGraph, options = {}) {
+export async function compileSceneGraphGeometry(sceneGraph, options = {}) {
   if (!sceneGraph || !Array.isArray(sceneGraph.objects)) {
     throw new Error("Scene graph is invalid.");
   }
 
   const logger = options.logger;
+  const onProgress = options.onProgress ?? null;
   const geometryCache = options.geometryCache;
   if (!(geometryCache instanceof Map)) {
     throw new Error("geometryCache must be a Map.");
@@ -164,7 +165,7 @@ export function compileSceneGraphGeometry(sceneGraph, options = {}) {
     if (cacheEntry && cacheEntry.cacheKey === cacheKey) {
       geometry = cacheEntry.geometry;
     } else {
-      geometry = buildRepresentationGeometry({ object, representation, logger });
+      geometry = await buildRepresentationGeometry({ object, representation, logger, onProgress });
       geometryCache.set(representation.id, {
         cacheKey,
         geometry

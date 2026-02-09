@@ -958,10 +958,14 @@ async function rebuildSceneFromSceneGraph(options = {}) {
     return;
   }
 
-  const compiled = compileSceneGraphGeometry(sceneGraph, {
+  const compiled = await compileSceneGraphGeometry(sceneGraph, {
     geometryCache: repGeometryCache,
-    logger
+    logger,
+    onProgress(step, total, message) {
+      setLoadingOverlay(true, `Surface ${step}/${total}: ${message}`);
+    }
   });
+  setLoadingOverlay(false);
 
   applyMaterialToRenderState(compiled.primaryMaterial);
 
