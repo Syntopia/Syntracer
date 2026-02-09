@@ -1469,6 +1469,34 @@ async function loadBuiltinMolecule(name) {
   await rebuildSceneFromSceneGraph({ fitCamera: true });
 }
 
+async function loadBundledMolecularAsset(assetKey) {
+  const assetMap = {
+    benzene_hf_total_density: {
+      path: "assets/benzene_hf_total_density.cube",
+      filename: "benzene_hf_total_density.cube"
+    }
+  };
+  const asset = assetMap[assetKey];
+  if (!asset) {
+    throw new Error(`Unsupported molecular asset selection: ${assetKey}`);
+  }
+
+  logger.info(`Loading bundled molecular asset: ${asset.filename}`);
+  const response = await fetch(asset.path);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch bundled molecular asset: ${asset.path}`);
+  }
+  const text = await response.text();
+  const parsed = parseMolecularImport(text, asset.filename);
+
+  // Built-in examples replace the current Project scene.
+  sceneGraph = null;
+  repGeometryCache.clear();
+  appendParsedImportToSceneGraph(parsed);
+  renderSceneGraphTree();
+  await rebuildSceneFromSceneGraph({ fitCamera: true });
+}
+
 // Expose for debugging in console
 window.loadMolecularFile = loadMolecularFile;
 window.loadPDBById = loadPDBById;
@@ -3501,6 +3529,10 @@ async function loadExampleScene(url) {
     } else if (url.startsWith("pdb:")) {
       const pdbId = url.slice(4);
       await loadPDBById(pdbId);
+      success = true;
+    } else if (url.startsWith("asset:cube:")) {
+      const assetKey = url.slice("asset:cube:".length);
+      await loadBundledMolecularAsset(assetKey);
       success = true;
     } else {
       throw new Error(`Unsupported example selection: ${url}`);

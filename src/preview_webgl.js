@@ -1,7 +1,7 @@
 import { triangulateSceneForPreview } from "./preview_mesh.js";
 
 const SHADOW_MAP_SIZE = 1024;
-const PREVIEW_VOLUME_OPACITY_SCALE = 0.1;
+const PREVIEW_VOLUME_OPACITY_SCALE = 1.0;
 const PREVIEW_BRIGHTNESS_GAIN = 0.5;
 
 function createSceneTargets(gl, width, height) {
@@ -886,13 +886,24 @@ void main() {
   vec3 rawNormal = texture(uSceneNormal, uv).xyz;
   float depth = depthAt(uv);
 
-  bool hasGeometry = (scene.a > 1e-4) || (dot(rawNormal, rawNormal) > 1e-6);
+  // Volume pass can contribute color without writing normal, and alpha can be
+  // very small in the intermediate RGBA8 target. Consider non-zero color too.
+  bool hasGeometry = (scene.a > 1e-4)
+    || (dot(rawNormal, rawNormal) > 1e-6)
+    || (dot(scene.rgb, scene.rgb) > 1e-7);
   if (!hasGeometry) {
     outColor = vec4(0.0, 0.0, 0.0, 0.0);
     return;
   }
 
   vec3 color = scene.rgb;
+  // Volume-only pixels have color but no normal/depth — pass through as-is
+  bool hasNormal = dot(rawNormal, rawNormal) > 1e-6;
+  if (!hasNormal && depth >= 0.999999) {
+    outColor = vec4(color, scene.a > 1e-4 ? 1.0 : 0.0);
+    return;
+  }
+
   vec3 normal = normalAt(uv);
   if (uEdgeAccentStrength > 0.0) {
     color *= computeNormalOcclusion(uv, normal);
@@ -987,22 +998,22 @@ vec4 transfer(float value) {
   float signedNorm = value / maxV;
   float mag = abs(signedNorm);
   float threshold = clamp(uVolumeThreshold, 0.0, 1.0);
-  float vmax = max(threshold + 1e-6, clamp(uVolumeValueMax, threshold + 1e-6, 1.0));
-  float t = smoothstep(threshold, vmax, mag);
+  float windowSpan = max(uVolumeValueMax - threshold, 1e-6);
+  float mapped = clamp((mag - threshold) / windowSpan, 0.0, 1.0);
 
   if (uTransferPreset == 1) { // grayscale
-    return vec4(vec3(mag), t);
+    return vec4(vec3(mapped), mapped);
   }
   if (uTransferPreset == 2) { // heatmap
     vec3 c = vec3(
-      smoothstep(0.0, 0.6, mag),
-      smoothstep(0.2, 0.85, mag),
-      smoothstep(0.5, 1.0, mag)
+      smoothstep(0.0, 0.6, mapped),
+      smoothstep(0.2, 0.85, mapped),
+      smoothstep(0.5, 1.0, mapped)
     );
-    return vec4(c, t);
+    return vec4(c, mapped);
   }
   vec3 c = signedNorm >= 0.0 ? uPositiveColor : uNegativeColor; // orbital
-  return vec4(c, t);
+  return vec4(c, mapped);
 }
 
 vec3 toneMapReinhard(vec3 c) {
@@ -1053,19 +1064,22 @@ void main() {
       vec3 texCoord = (p - uVolumeMin) * uVolumeInvSize;
       float value = texture(uVolumeTex, texCoord).r;
       vec4 tr = transfer(value);
-      float alpha = 1.0 - exp(-tr.a * uVolumeDensity * uVolumeOpacity * dt * 8.0);
-      vec3 contrib = tr.rgb * alpha;
-      accumColor += (1.0 - accumAlpha) * contrib;
-      accumAlpha += (1.0 - accumAlpha) * alpha;
-      if (accumAlpha > 0.995) break;
+      if (tr.a > 0.0) {
+        float alpha = 1.0 - exp(-tr.a * uVolumeDensity * dt);
+        alpha = clamp(alpha * uVolumeOpacity, 0.0, 1.0);
+        vec3 contrib = tr.rgb * alpha;
+        accumColor += (1.0 - accumAlpha) * contrib;
+        accumAlpha += (1.0 - accumAlpha) * alpha;
+        if (accumAlpha > 0.995) break;
+      }
     }
   } else {
-    float minDim = min(uVolumeMax.x - uVolumeMin.x, min(uVolumeMax.y - uVolumeMin.y, uVolumeMax.z - uVolumeMin.z));
-    float stepLen = max(0.0025, uVolumeStep * minDim * 0.02);
+    float stepLen = max(0.001, uVolumeStep);
     int maxSteps = max(8, uVolumeMaxSteps);
     float t = tEnter;
     for (int i = 0; i < 2048; i += 1) {
       if (i >= maxSteps || t > tExit) break;
+      float currentStep = min(stepLen, tExit - t);
       vec3 p = rayOrigin + rayDir * t;
       if (uClipEnabled == 1) {
         float clipSide = dot(uClipNormal, p) - uClipOffset;
@@ -1077,11 +1091,14 @@ void main() {
       vec3 texCoord = (p - uVolumeMin) * uVolumeInvSize;
       float value = texture(uVolumeTex, texCoord).r;
       vec4 tr = transfer(value);
-      float alpha = 1.0 - exp(-tr.a * uVolumeDensity * uVolumeOpacity * stepLen * 10.0);
-      vec3 contrib = tr.rgb * alpha;
-      accumColor += (1.0 - accumAlpha) * contrib;
-      accumAlpha += (1.0 - accumAlpha) * alpha;
-      if (accumAlpha > 0.995) break;
+      if (tr.a > 0.0) {
+        float alpha = 1.0 - exp(-tr.a * uVolumeDensity * currentStep);
+        alpha = clamp(alpha * uVolumeOpacity, 0.0, 1.0);
+        vec3 contrib = tr.rgb * alpha;
+        accumColor += (1.0 - accumAlpha) * contrib;
+        accumAlpha += (1.0 - accumAlpha) * alpha;
+        if (accumAlpha > 0.995) break;
+      }
       t += stepLen;
     }
   }
@@ -1096,7 +1113,8 @@ void main() {
     accumColor = toneMapAces(accumColor);
   }
   accumColor = pow(max(accumColor, vec3(0.0)), vec3(1.0 / 2.2));
-  outColor = vec4(accumColor, clamp(accumAlpha, 0.0, 1.0));
+  float a = clamp(accumAlpha, 0.0, 1.0);
+  outColor = vec4(accumColor / max(a, 1e-5), a);
 }
 `;
 
@@ -1395,6 +1413,11 @@ function renderPreviewVolume(previewState, params) {
     return;
   }
 
+  // Narrow draw buffers to COLOR_ATTACHMENT0 only — the volume shader writes
+  // to location 0 only, and leaving a second draw buffer active with no
+  // matching output causes some drivers (ANGLE/Chrome) to silently drop the draw.
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+
   gl.useProgram(previewState.volumeProgram);
   gl.bindVertexArray(previewState.emptyVao);
   gl.disable(gl.CULL_FACE);
@@ -1443,6 +1466,9 @@ function renderPreviewVolume(previewState, params) {
   gl.disable(gl.BLEND);
   gl.depthMask(true);
   gl.bindVertexArray(null);
+
+  // Restore MRT for subsequent passes (transparent geometry writes to both buffers)
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
 }
 
 function renderComposite(previewState, params) {
