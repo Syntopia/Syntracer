@@ -13,7 +13,7 @@ Created by Mikael Hvidtfeldt Christensen, in close collaboration with Claude Cod
 ## Features at a Glance
 
 - Path tracing with importance-sampled environment and direct lighting
-- PDB, SDF/MOL, and Gaussian CUBE file import
+- PDB, SDF/MOL/XYZ, and Gaussian CUBE file import
 - Solvent-Exluded Surfaces (Molecular surface computed via GPU-accelerated distance-field evaluation)
 - Seven molecular display styles including cartoon ribbons (with automatic DSSP detection)
 - Four physically-based material models
@@ -74,7 +74,7 @@ A **Surface-Area-Heuristic (SAH) BVH** is built on the CPU over a unified primit
 Serve the project with any static file server. For example, with uvicorn:
 
 ```bash
-mamba run -n wave uvicorn server:app --reload
+uvicorn server:app --reload
 ```
 
 Then open `http://localhost:8000`.
@@ -93,12 +93,6 @@ This fetches 1k-resolution HDRI files from Polyhaven into `assets/env/`.
 npm test
 ```
 
-or
-
-```bash
-mamba run -n wave node --test
-```
-
 ---
 
 ## Architecture
@@ -107,7 +101,7 @@ mamba run -n wave node --test
 src/
   main.js                  Application entry, UI, camera, render loop
   webgl.js                 WebGL2 init, shader compilation, uniforms, fragment shader
-  molecular.js             PDB / SDF / CUBE parsers, bond generation
+  molecular.js             PDB / SDF / XYZ / CUBE parsers, bond generation
   scene_graph.js           Scene graph data model
   scene_graph_compile.js   Scene graph to geometry compilation
   representation_builder.js  Geometry builders for each display style

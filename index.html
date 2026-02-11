@@ -805,9 +805,11 @@
                   <option value="mol:aspirin">Aspirin</option>
                 <option value="mol:ibuprofen">Ibuprofen</option>
                 <option value="mol:benzene">Benzene</option>
-                <option value="asset:cube:benzene_hf_total_density">Benzene HF density</option>
                 <option value="mol:ethanol">Ethanol</option>
                 <option value="mol:glucose">Glucose</option>
+                </optgroup>
+                <optgroup label="Volumetric (.cube)">
+                  <option value="asset:cube:benzene_hf_total_density">Benzene HF density</option>
                 </optgroup>
                 <optgroup label="Proteins (PDB)">
                   <option value="pdb:1CRN">Crambin (1CRN)</option>
@@ -824,8 +826,8 @@
             <div class="form-section">
               <div class="form-section-title">Import Files</div>
 
-              <label for="molFileInput">Molecular file (PDB/SDF/MOL/CUBE)</label>
-              <input id="molFileInput" type="file" accept=".pdb,.sdf,.mol,.cube" multiple />
+              <label for="molFileInput">Molecular file (PDB/SDF/MOL/XYZ/CUBE)</label>
+              <input id="molFileInput" type="file" accept=".pdb,.sdf,.mol,.xyz,.cube" multiple />
 
               <div style="height: 8px"></div>
               <div class="flex-row">
@@ -834,6 +836,14 @@
                   <input id="pdbIdInput" type="text" placeholder="e.g., 1CRN" />
                 </div>
                 <button id="loadPdbId">Fetch</button>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="form-section-title">Import / Export Settings</div>
+              <div>
+                <button id="importSettingsClipboard" class="secondary" type="button">Import Settings from Clipboard</button>
+                <button id="exportSettingsClipboard" class="secondary" type="button">Export Settings to Clipboard</button>
               </div>
             </div>
 

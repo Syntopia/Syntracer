@@ -61,6 +61,11 @@ import {
   choosePreviewVolumeTechnique
 } from "./preview_webgl.js";
 import { createRenderModeController, RENDER_MODES } from "./render_mode_controller.js";
+import {
+  createSettingsClipboardPayload,
+  parseSettingsClipboardText,
+  applySettingsClipboardPayload
+} from "./settings_clipboard.js";
 
 const canvas = document.getElementById("view");
 const canvasContainer = canvas?.closest(".canvas-container");
@@ -92,6 +97,8 @@ const analyticSkyHorizonSoftnessInput = document.getElementById("analyticSkyHori
 const molFileInput = document.getElementById("molFileInput");
 const pdbIdInput = document.getElementById("pdbIdInput");
 const loadPdbIdBtn = document.getElementById("loadPdbId");
+const importSettingsClipboardBtn = document.getElementById("importSettingsClipboard");
+const exportSettingsClipboardBtn = document.getElementById("exportSettingsClipboard");
 const sceneGraphTree = document.getElementById("sceneGraphTree");
 const representationSelectionHint = document.getElementById("representationSelectionHint");
 const representationActionBtn = document.getElementById("representationActionBtn");
@@ -741,13 +748,14 @@ function inferSourceKind(filename) {
   const ext = String(filename || "").toLowerCase();
   if (ext.endsWith(".pdb")) return "pdb";
   if (ext.endsWith(".cube")) return "cube";
+  if (ext.endsWith(".xyz")) return "xyz";
   if (ext.endsWith(".sdf") || ext.endsWith(".mol")) return "sdf";
   return null;
 }
 
 function requireSupportedImportFilename(filename) {
   const lower = String(filename || "").toLowerCase();
-  const supported = [".pdb", ".sdf", ".mol", ".cube"];
+  const supported = [".pdb", ".sdf", ".mol", ".xyz", ".cube"];
   if (!supported.some((ext) => lower.endsWith(ext))) {
     throw new Error(
       `Unsupported file format for "${filename}". Supported formats: ${supported.join(", ")}.`
@@ -1873,6 +1881,181 @@ function updateLightState() {
     color: hexToRgb(light2Color.value)
   };
   resetAccumulation("Lighting updated.");
+}
+
+function requireClipboardApi() {
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function" || typeof navigator.clipboard.writeText !== "function") {
+    throw new Error("Clipboard API is unavailable in this browser context.");
+  }
+  return navigator.clipboard;
+}
+
+function collectEnvironmentUiState() {
+  return {
+    envSelect: envSelect?.value ?? "",
+    envUniformColor: envUniformColorInput?.value ?? "#ffffff",
+    analyticSkyResolution: analyticSkyResolutionSelect?.value ?? "1024x512",
+    analyticSkyTurbidity: analyticSkyTurbidityInput?.value ?? "2.5",
+    analyticSkySunAzimuth: analyticSkySunAzimuthInput?.value ?? "30",
+    analyticSkySunElevation: analyticSkySunElevationInput?.value ?? "35",
+    analyticSkyIntensity: analyticSkyIntensityInput?.value ?? "1.0",
+    analyticSkySunIntensity: analyticSkySunIntensityInput?.value ?? "20.0",
+    analyticSkySunRadius: analyticSkySunRadiusInput?.value ?? "0.27",
+    analyticSkyGroundAlbedo: analyticSkyGroundAlbedoInput?.value ?? "0.20",
+    analyticSkyHorizonSoftness: analyticSkyHorizonSoftnessInput?.value ?? "0.12"
+  };
+}
+
+function setSelectValueAllowingMissingOption(selectEl, value) {
+  if (!selectEl) return;
+  const normalized = String(value ?? "");
+  const existingOption = Array.from(selectEl.options).find((option) => option.value === normalized);
+  if (!existingOption && normalized !== "") {
+    const dynamicOption = document.createElement("option");
+    dynamicOption.value = normalized;
+    dynamicOption.textContent = normalized;
+    dynamicOption.dataset.dynamicImported = "1";
+    selectEl.appendChild(dynamicOption);
+  }
+  selectEl.value = normalized;
+}
+
+function applyEnvironmentUiState(uiState) {
+  if (!uiState || typeof uiState !== "object") return;
+  setSelectValueAllowingMissingOption(envSelect, uiState.envSelect ?? "");
+  if (envUniformColorInput) envUniformColorInput.value = String(uiState.envUniformColor ?? "#ffffff");
+  if (analyticSkyResolutionSelect) setSelectValueAllowingMissingOption(analyticSkyResolutionSelect, uiState.analyticSkyResolution);
+  if (analyticSkyTurbidityInput) setSliderValue(analyticSkyTurbidityInput, Number(uiState.analyticSkyTurbidity));
+  if (analyticSkySunAzimuthInput) setSliderValue(analyticSkySunAzimuthInput, Number(uiState.analyticSkySunAzimuth));
+  if (analyticSkySunElevationInput) setSliderValue(analyticSkySunElevationInput, Number(uiState.analyticSkySunElevation));
+  if (analyticSkyIntensityInput) setSliderValue(analyticSkyIntensityInput, Number(uiState.analyticSkyIntensity));
+  if (analyticSkySunIntensityInput) setSliderValue(analyticSkySunIntensityInput, Number(uiState.analyticSkySunIntensity));
+  if (analyticSkySunRadiusInput) setSliderValue(analyticSkySunRadiusInput, Number(uiState.analyticSkySunRadius));
+  if (analyticSkyGroundAlbedoInput) setSliderValue(analyticSkyGroundAlbedoInput, Number(uiState.analyticSkyGroundAlbedo));
+  if (analyticSkyHorizonSoftnessInput) setSliderValue(analyticSkyHorizonSoftnessInput, Number(uiState.analyticSkyHorizonSoftness));
+}
+
+function syncControlsFromState() {
+  setSelectValueAllowingMissingOption(scaleSelect, renderState.renderScale);
+  setSelectValueAllowingMissingOption(fastScaleSelect, renderState.fastScale);
+  setSliderValue(maxBouncesInput, renderState.maxBounces);
+  setSliderValue(samplesPerBounceInput, renderState.samplesPerBounce);
+  setSliderValue(maxFramesInput, renderState.maxFrames);
+  setSliderValue(exposureInput, renderState.exposure);
+  setSliderValue(cameraFovInput, (renderState?.cameraFovDeg ?? (cameraState.fov * 180.0 / Math.PI)));
+  if (dofEnableToggle) dofEnableToggle.checked = Boolean(renderState.dofEnabled);
+  setSliderValue(dofApertureInput, renderState.dofAperture);
+  setSliderValue(dofFocusDistanceInput, renderState.dofFocusDistance);
+  setSelectValueAllowingMissingOption(toneMapSelect, renderState.toneMap);
+  setSliderValue(edgeAccentInput, renderState.edgeAccent);
+  setSelectValueAllowingMissingOption(edgeAccentModeSelect, renderState.edgeAccentMode);
+  setSliderValue(ambientIntensityInput, renderState.ambientIntensity);
+  if (ambientColorInput) ambientColorInput.value = rgbToHex(renderState.ambientColor);
+  if (shadowToggle) shadowToggle.checked = Boolean(renderState.castShadows);
+  if (previewShadowsToggle) previewShadowsToggle.checked = Boolean(renderState.previewShadows);
+  if (previewSsrToggle) previewSsrToggle.checked = Boolean(renderState.previewSsr);
+  setSliderValue(previewLightIntensityInput, renderState.previewLightIntensity);
+
+  if (volumeEnableToggle) volumeEnableToggle.checked = Boolean(renderState.volumeEnabled);
+  if (volumeColorInput) volumeColorInput.value = rgbToHex(renderState.volumeColor);
+  setSliderValue(volumeDensityInput, renderState.volumeDensity);
+  setSliderValue(volumeOpacityInput, renderState.volumeOpacity);
+  setSliderValue(volumeStepInput, renderState.volumeStep);
+  setSliderValue(volumeMaxStepsInput, renderState.volumeMaxSteps);
+  setSliderValue(volumeThresholdInput, renderState.volumeThreshold);
+
+  setSliderValue(envIntensityInput, renderState.envIntensity);
+  setSliderValue(envBgIntensityInput, renderState.envBgIntensity);
+  setSliderValue(envRotationInput, renderState.envRotationDeg);
+  setSliderValue(envRotationVerticalInput, renderState.envRotationVerticalDeg);
+  setSliderValue(envMaxLumInput, renderState.envMaxLuminance);
+
+  if (clipEnableToggle) clipEnableToggle.checked = Boolean(renderState.clipEnabled);
+  setSliderValue(clipDistanceInput, renderState.clipDistance);
+  if (clipLockToggle) clipLockToggle.checked = Boolean(renderState.clipLocked);
+
+  if (visModeSelect) visModeSelect.value = String(renderState.visMode || 0);
+
+  const [light1 = null, light2 = null] = Array.isArray(renderState.lights) ? renderState.lights : [];
+  if (light1) {
+    light1Enable.checked = Boolean(light1.enabled);
+    setSliderValue(light1Azimuth, light1.azimuth);
+    setSliderValue(light1Elevation, light1.elevation);
+    setSliderValue(light1Intensity, light1.intensity);
+    setSliderValue(light1Extent, light1.angle);
+    light1Color.value = rgbToHex(light1.color);
+  }
+  if (light2) {
+    light2Enable.checked = Boolean(light2.enabled);
+    setSliderValue(light2Azimuth, light2.azimuth);
+    setSliderValue(light2Elevation, light2.elevation);
+    setSliderValue(light2Intensity, light2.intensity);
+    setSliderValue(light2Extent, light2.angle);
+    light2Color.value = rgbToHex(light2.color);
+  }
+}
+
+async function exportSettingsToClipboard() {
+  const clipboard = requireClipboardApi();
+  const payload = createSettingsClipboardPayload({
+    renderMode: renderModeController.getMode(),
+    cameraState,
+    renderState,
+    sceneGraph,
+    uiState: {
+      environment: collectEnvironmentUiState()
+    }
+  });
+  await clipboard.writeText(JSON.stringify(payload, null, 2));
+  logger.info("Exported render settings to clipboard.");
+}
+
+async function importSettingsFromClipboard() {
+  const clipboard = requireClipboardApi();
+  const text = await clipboard.readText();
+  if (!text.trim()) {
+    throw new Error("Clipboard is empty.");
+  }
+
+  const applied = applySettingsClipboardPayload(parseSettingsClipboardText(text), {
+    cameraState,
+    renderState,
+    sceneGraph,
+    setRenderMode: (mode) => renderModeController.setMode(mode)
+  });
+  repGeometryCache.clear();
+
+  applyEnvironmentUiState(applied.payload.uiState?.environment || null);
+  syncControlsFromState();
+
+  updateRenderModeUi();
+  updateMaterialVisibility();
+  updateDofVisibility();
+  updateEnvironmentVisibility();
+  renderSceneGraphTree();
+
+  if (sceneGraph && Array.isArray(sceneGraph.objects) && sceneGraph.objects.length > 0) {
+    await rebuildSceneFromSceneGraph({ fitCamera: false });
+  } else {
+    renderState.cameraDirty = true;
+    resetAccumulation("Imported settings from clipboard.");
+  }
+
+  updateRenderLimits();
+  updateMaterialState();
+  updatePreviewQualityState();
+  updateVolumeState();
+  updateLightState();
+  updateClipState({ preserveLock: false });
+  try {
+    await updateEnvironmentState();
+  } catch (err) {
+    logger.error(err?.message || String(err));
+  }
+
+  logger.info(
+    `Imported settings from clipboard (objects: ${applied.updatedObjects}, representations: ${applied.updatedRepresentations}).`
+  );
 }
 
 function computeBounds(positions) {
@@ -3644,6 +3827,27 @@ loadPdbIdBtn.addEventListener("click", async () => {
   }
   if (loaded && sceneData) {
     await startRenderLoop();
+  }
+});
+
+importSettingsClipboardBtn?.addEventListener("click", async () => {
+  stopRenderLoop();
+  try {
+    await importSettingsFromClipboard();
+    await startRenderLoop();
+  } catch (err) {
+    logger.error(err?.message || String(err));
+    if (!isRendering) {
+      startRenderLoop().catch((loopErr) => logger.error(loopErr?.message || String(loopErr)));
+    }
+  }
+});
+
+exportSettingsClipboardBtn?.addEventListener("click", async () => {
+  try {
+    await exportSettingsToClipboard();
+  } catch (err) {
+    logger.error(err?.message || String(err));
   }
 });
 

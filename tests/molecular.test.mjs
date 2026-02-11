@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parsePDB, parseAutoDetect, splitMolDataByHetatm } from "../src/molecular.js";
+import { parsePDB, parseAutoDetect, parseXYZ, splitMolDataByHetatm } from "../src/molecular.js";
 
 test("parsePDB marks HETATM and splitMolDataByHetatm partitions atoms/bonds", () => {
   const pdb = [
@@ -70,4 +70,50 @@ test("parseAutoDetect handles cube files by returning molecule data", () => {
   const mol = parseAutoDetect(cubeText, "hf_total_density.cube");
   assert.equal(mol.atoms.length, 6);
   assert.ok(Array.isArray(mol.bonds));
+});
+
+test("parseXYZ parses XYZ atoms and infers bonds from distances", () => {
+  const xyz = [
+    "5",
+    "methanol",
+    "C 0.000 0.000 0.000",
+    "O 1.430 0.000 0.000",
+    "H -0.600 0.930 0.000",
+    "H -0.600 -0.930 0.000",
+    "H 1.900 0.820 0.000",
+    ""
+  ].join("\n");
+
+  const mol = parseXYZ(xyz);
+  assert.equal(mol.atoms.length, 5, "Should parse all atoms.");
+  assert.equal(mol.atoms[1].element, "O", "Should preserve element symbols.");
+  assert.ok(Array.isArray(mol.bonds), "Should expose bonds array.");
+  assert.ok(mol.bonds.length >= 4, "Should infer expected covalent bonds.");
+});
+
+test("parseAutoDetect handles xyz extension by using XYZ parser", () => {
+  const xyz = [
+    "2",
+    "hydrogen",
+    "H 0.0 0.0 0.0",
+    "H 0.74 0.0 0.0",
+    ""
+  ].join("\n");
+  const mol = parseAutoDetect(xyz, "h2.xyz");
+  assert.equal(mol.atoms.length, 2);
+  assert.deepEqual(mol.bonds, [[0, 1]]);
+});
+
+test("parseXYZ rejects malformed XYZ input", () => {
+  const invalid = [
+    "2",
+    "bad",
+    "H 0.0 0.0",
+    "H 0.74 0.0 0.0",
+    ""
+  ].join("\n");
+  assert.throws(
+    () => parseXYZ(invalid),
+    /Invalid XYZ file: atom line 3 must include symbol and x\/y\/z\./
+  );
 });

@@ -1,5 +1,5 @@
 /**
- * Molecular file parser and converter for PDB/SDF/CUBE formats.
+ * Molecular file parser and converter for PDB/SDF/MOL/XYZ/CUBE formats.
  * Converts molecular structures to spheres (atoms) and cylinders (bonds).
  */
 import { parseCubeFile } from "./cube.js";
@@ -53,6 +53,27 @@ const ELEMENT_RADII = {
 // Bond display radius
 const BOND_RADIUS = 0.15;
 const BOND_COLOR = [0.9, 0.9, 0.9];  // White/light gray
+
+function normalizeElementSymbol(rawSymbol) {
+  const token = String(rawSymbol || "").trim();
+  if (!token) return "";
+  const lettersOnly = token.replace(/[^A-Za-z]/g, "");
+  if (!lettersOnly) return "";
+
+  const oneLetter = lettersOnly[0].toUpperCase();
+  if (lettersOnly.length === 1) {
+    return oneLetter;
+  }
+  const twoLetter = oneLetter + lettersOnly[1].toLowerCase();
+  if (
+    Object.prototype.hasOwnProperty.call(ELEMENT_RADII, twoLetter) ||
+    Object.prototype.hasOwnProperty.call(COVALENT_RADII, twoLetter) ||
+    Object.prototype.hasOwnProperty.call(ELEMENT_COLORS, twoLetter)
+  ) {
+    return twoLetter;
+  }
+  return oneLetter;
+}
 
 /**
  * Parse a PDB file and extract atoms and bonds.
@@ -247,6 +268,67 @@ export function parseSDF(text) {
     if (atom1 >= 0 && atom2 >= 0 && atom1 < atomCount && atom2 < atomCount) {
       bonds.push([atom1, atom2]);
     }
+  }
+
+  return { atoms, bonds };
+}
+
+/**
+ * Parse an XYZ file and infer bonds from atomic distances.
+ * @param {string} text - XYZ file content
+ * @returns {{atoms: Array, bonds: Array}}
+ */
+export function parseXYZ(text) {
+  const lines = text.split(/\r?\n/);
+  if (lines.length < 2) {
+    throw new Error("Invalid XYZ file: too few lines.");
+  }
+
+  const atomCount = Number.parseInt(lines[0].trim(), 10);
+  if (!Number.isInteger(atomCount) || atomCount < 0) {
+    throw new Error("Invalid XYZ file: first line must be a non-negative integer atom count.");
+  }
+  if (lines.length < atomCount + 2) {
+    throw new Error(`Invalid XYZ file: expected ${atomCount} atom lines.`);
+  }
+
+  const atoms = [];
+  const bonds = [];
+  for (let i = 0; i < atomCount; i += 1) {
+    const lineNumber = i + 3;
+    const line = lines[i + 2];
+    if (!line || !line.trim()) {
+      throw new Error(`Invalid XYZ file: atom line ${lineNumber} is empty.`);
+    }
+
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 4) {
+      throw new Error(`Invalid XYZ file: atom line ${lineNumber} must include symbol and x/y/z.`);
+    }
+
+    const element = normalizeElementSymbol(fields[0]);
+    if (!element) {
+      throw new Error(`Invalid XYZ file: atom line ${lineNumber} has invalid element symbol "${fields[0]}".`);
+    }
+
+    const x = Number.parseFloat(fields[1]);
+    const y = Number.parseFloat(fields[2]);
+    const z = Number.parseFloat(fields[3]);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new Error(`Invalid XYZ file: atom line ${lineNumber} has non-finite coordinates.`);
+    }
+
+    atoms.push({
+      serial: i + 1,
+      name: `${element}${i + 1}`,
+      element,
+      position: [x, y, z],
+      isHet: false
+    });
+  }
+
+  if (atoms.length > 1) {
+    generateBondsFromDistance(atoms, bonds);
   }
 
   return { atoms, bonds };
@@ -448,6 +530,8 @@ export function parseAutoDetect(text, filename = '') {
 
   if (ext === 'pdb' || text.includes('ATOM  ') || text.includes('HETATM')) {
     return parsePDB(text);
+  } else if (ext === "xyz") {
+    return parseXYZ(text);
   } else if (ext === "cube") {
     return parseCubeFile(text).molData;
   } else if (ext === 'sdf' || ext === 'mol' || text.includes('V2000') || text.includes('V3000')) {
